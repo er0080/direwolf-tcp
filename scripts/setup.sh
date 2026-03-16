@@ -36,11 +36,19 @@ done
 mkdir -p "$LOG_DIR"
 > "$PIDFILE"
 
+# NOTE: pactl must run as the user who owns the PipeWire session.
+# When this script runs under sudo, XDG_RUNTIME_DIR belongs to the
+# original user — resolve that here, before any pactl calls.
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_UID=$(id -u "$REAL_USER")
+export XDG_RUNTIME_DIR="/run/user/$REAL_UID"
+PACTL_AS_USER="sudo -u $REAL_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR pactl"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Wait up to $3 seconds for a condition (command in $1) to be true
+# Wait up to $3 seconds for a condition (command in $2) to be true
 wait_for() {
     local desc="$1" cmd="$2" timeout="${3:-15}"
     local elapsed=0
@@ -58,7 +66,7 @@ wait_for() {
 # Return sink-input ID(s) for a given PID
 sink_input_for_pid() {
     local pid="$1"
-    pactl list sink-inputs | awk -v pid="\"$pid\"" '
+    $PACTL_AS_USER list sink-inputs | awk -v pid="\"$pid\"" '
         /^Sink Input #/ { id = substr($3, 2) }
         /application\.process\.id/ && index($0, pid) { print id }
     '
@@ -67,7 +75,7 @@ sink_input_for_pid() {
 # Return source-output ID(s) for a given PID
 source_output_for_pid() {
     local pid="$1"
-    pactl list source-outputs | awk -v pid="\"$pid\"" '
+    $PACTL_AS_USER list source-outputs | awk -v pid="\"$pid\"" '
         /^Source Output #/ { id = substr($3, 2) }
         /application\.process\.id/ && index($0, pid) { print id }
     '
@@ -79,16 +87,8 @@ source_output_for_pid() {
 echo "==> Creating virtual audio sinks..."
 
 # Unload any leftover sinks from a previous run
-pactl list short modules | awk '/module-null-sink.*dw_[ab]_to_[ab]/ {print $1}' \
-    | xargs -r -I{} pactl unload-module {}
-
-# NOTE: We need to run pactl as the user who owns the PipeWire session.
-# When this script runs under sudo, DBUS_SESSION_BUS_ADDRESS and
-# XDG_RUNTIME_DIR belong to the original user.  Capture them here.
-REAL_USER="${SUDO_USER:-$USER}"
-REAL_UID=$(id -u "$REAL_USER")
-export XDG_RUNTIME_DIR="/run/user/$REAL_UID"
-PACTL_AS_USER="sudo -u $REAL_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR pactl"
+$PACTL_AS_USER list short modules | awk '/module-null-sink.*dw_[ab]_to_[ab]/ {print $1}' \
+    | xargs -r -I{} $PACTL_AS_USER unload-module {}
 
 $PACTL_AS_USER load-module module-null-sink \
     sink_name=dw_a_to_b rate=44100 \

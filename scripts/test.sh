@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_UID=$(id -u "$REAL_USER")
+export XDG_RUNTIME_DIR="/run/user/$REAL_UID"
+PACTL="sudo -u $REAL_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR pactl"
+
 COUNT=5
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -41,8 +46,8 @@ run_test "Direwolf B KISS port 8002 listening" ss -tlnp | grep -q :8002
 
 echo ""
 echo "==> Audio routing check"
-run_test "PipeWire sink dw_a_to_b present" pactl list short sinks | grep -q dw_a_to_b
-run_test "PipeWire sink dw_b_to_a present" pactl list short sinks | grep -q dw_b_to_a
+run_test "PipeWire sink dw_a_to_b present" bash -c "$PACTL list short sinks | grep -q dw_a_to_b"
+run_test "PipeWire sink dw_b_to_a present" bash -c "$PACTL list short sinks | grep -q dw_b_to_a"
 
 echo ""
 echo "==> Ping A→B  (tnc0 10.0.0.1 → 10.0.0.2, ${COUNT} packets)"
