@@ -34,10 +34,10 @@ run_test() {
 }
 
 echo "==> Interface check"
-run_test "tnc0 exists and is UP"  ip link show tnc0
-run_test "tnc1 exists and is UP"  ip link show tnc1
-run_test "tnc0 has address 10.0.0.1" bash -c "ip addr show tnc0 | grep -q 10.0.0.1"
-run_test "tnc1 has address 10.0.0.2" bash -c "ip addr show tnc1 | grep -q 10.0.0.2"
+run_test "tnc0 exists in ns_a"       ip netns exec ns_a ip link show tnc0
+run_test "tnc1 exists in ns_b"       ip netns exec ns_b ip link show tnc1
+run_test "tnc0 has address 10.0.0.1" bash -c "ip netns exec ns_a ip addr show tnc0 | grep -q 10.0.0.1"
+run_test "tnc1 has address 10.0.0.2" bash -c "ip netns exec ns_b ip addr show tnc1 | grep -q 10.0.0.2"
 
 echo ""
 echo "==> KISS port check"
@@ -50,12 +50,12 @@ run_test "PipeWire sink dw_a_to_b present" bash -c "$PACTL list short sinks | gr
 run_test "PipeWire sink dw_b_to_a present" bash -c "$PACTL list short sinks | grep -q dw_b_to_a"
 
 echo ""
-echo "==> Ping A→B  (tnc0 10.0.0.1 → 10.0.0.2, ${COUNT} packets)"
-ping -c "$COUNT" -W 10 -I tnc0 10.0.0.2
+echo "==> Ping A→B  (ns_a 10.0.0.1 → 10.0.0.2, ${COUNT} packets)"
+ip netns exec ns_a ping -c "$COUNT" -W 10 10.0.0.2
 echo ""
 
-echo "==> Ping B→A  (tnc1 10.0.0.2 → 10.0.0.1, ${COUNT} packets)"
-ping -c "$COUNT" -W 10 -I tnc1 10.0.0.1
+echo "==> Ping B→A  (ns_b 10.0.0.2 → 10.0.0.1, ${COUNT} packets)"
+ip netns exec ns_b ping -c "$COUNT" -W 10 10.0.0.1
 echo ""
 
 echo "-------------------------------------------"

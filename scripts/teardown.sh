@@ -34,6 +34,17 @@ pkill -x direwolf   2>/dev/null && echo "  Killed remaining direwolf processes" 
 
 sleep 0.5
 
+# Remove network namespaces and veth pairs
+for ns in ns_a ns_b; do
+    if ip netns list | grep -q "^$ns"; then
+        ip netns del "$ns" && echo "  Deleted namespace $ns"
+    fi
+done
+# veth host-side peers are removed automatically when their namespace is deleted,
+# but clean up any orphans just in case
+ip link del veth_ha 2>/dev/null && echo "  Deleted veth_ha" || true
+ip link del veth_hb 2>/dev/null && echo "  Deleted veth_hb" || true
+
 # Remove virtual audio sinks
 $PACTL_AS_USER list short modules \
     | awk '/module-null-sink.*dw_[ab]_to_[ab]/ {print $1}' \

@@ -173,33 +173,79 @@ echo "  Sink-input $SI_B → dw_b_to_a (TX)"
 echo "  Source-output $SO_B → dw_a_to_b.monitor (RX)"
 
 # ---------------------------------------------------------------------------
-# Step 4: tncattach network interfaces
+# Step 4: Network namespaces + tncattach
+#
+# Both tnc0 (10.0.0.1) and tnc1 (10.0.0.2) would normally share the same
+# /30 subnet on a single host, causing the kernel to short-circuit ICMP
+# replies via local delivery rather than sending them through the virtual
+# radio chain.  Placing each tncattach in its own network namespace gives
+# each endpoint an isolated routing table with no address conflicts.
+#
+# Each namespace gets a veth pair so tncattach can reach direwolf's KISS
+# TCP port on the host loopback via a private link-local address:
+#
+#   ns_a: veth_na (192.168.100.2) ←→ veth_ha (192.168.100.1) host
+#   ns_b: veth_nb (192.168.100.6) ←→ veth_hb (192.168.100.5) host
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> Attaching tncattach interfaces..."
+echo "==> Creating network namespaces and attaching tncattach..."
 
 wait_for "KISS port 8001 ready for connection" "ss -tlnp | grep -q :8001"
 wait_for "KISS port 8002 ready for connection" "ss -tlnp | grep -q :8002"
 
-"$TNCATTACH" -T -H localhost -P 8001 --mtu 236 --noipv6 --noup &
+# Clean up any leftover namespaces / veth pairs from a previous run
+ip netns del ns_a 2>/dev/null || true
+ip netns del ns_b 2>/dev/null || true
+ip link del veth_ha  2>/dev/null || true
+ip link del veth_hb  2>/dev/null || true
+
+# --- Namespace A ---
+ip netns add ns_a
+ip link add veth_ha type veth peer name veth_na
+ip link set veth_na netns ns_a
+ip addr add 192.168.100.1/30 dev veth_ha
+ip link set veth_ha up
+ip netns exec ns_a ip link set lo up
+ip netns exec ns_a ip link set veth_na up
+ip netns exec ns_a ip addr add 192.168.100.2/30 dev veth_na
+ip netns exec ns_a ip route add default via 192.168.100.1
+echo "  ns_a ready  (veth: 192.168.100.1 ↔ 192.168.100.2)"
+
+# --- Namespace B ---
+ip netns add ns_b
+ip link add veth_hb type veth peer name veth_nb
+ip link set veth_nb netns ns_b
+ip addr add 192.168.100.5/30 dev veth_hb
+ip link set veth_hb up
+ip netns exec ns_b ip link set lo up
+ip netns exec ns_b ip link set veth_nb up
+ip netns exec ns_b ip addr add 192.168.100.6/30 dev veth_nb
+ip netns exec ns_b ip route add default via 192.168.100.5
+echo "  ns_b ready  (veth: 192.168.100.5 ↔ 192.168.100.6)"
+
+# --- tncattach A (inside ns_a) ---
+ip netns exec ns_a \
+    "$TNCATTACH" -T -H 192.168.100.1 -P 8001 --mtu 236 --noipv6 --noup &
 TNCA_PID=$!
 echo "$TNCA_PID" >> "$PIDFILE"
 
 sleep 1
-wait_for "tnc0 interface exists" "ip link show tnc0"
+wait_for "tnc0 exists in ns_a" "ip netns exec ns_a ip link show tnc0"
+ip netns exec ns_a \
+    ifconfig tnc0 10.0.0.1 pointopoint 10.0.0.2 netmask 255.255.255.252 up
+echo "  tnc0: 10.0.0.1 ↔ 10.0.0.2  [ns_a]  (KISS port 8001 / Direwolf A)"
 
-ifconfig tnc0 10.0.0.1 pointopoint 10.0.0.2 netmask 255.255.255.252 up
-echo "  tnc0: 10.0.0.1 ↔ 10.0.0.2  (via KISS port 8001 / Direwolf A)"
-
-"$TNCATTACH" -T -H localhost -P 8002 --mtu 236 --noipv6 --noup &
+# --- tncattach B (inside ns_b) ---
+ip netns exec ns_b \
+    "$TNCATTACH" -T -H 192.168.100.5 -P 8002 --mtu 236 --noipv6 --noup &
 TNCB_PID=$!
 echo "$TNCB_PID" >> "$PIDFILE"
 
 sleep 1
-wait_for "tnc1 interface exists" "ip link show tnc1"
-
-ifconfig tnc1 10.0.0.2 pointopoint 10.0.0.1 netmask 255.255.255.252 up
-echo "  tnc1: 10.0.0.2 ↔ 10.0.0.1  (via KISS port 8002 / Direwolf B)"
+wait_for "tnc1 exists in ns_b" "ip netns exec ns_b ip link show tnc1"
+ip netns exec ns_b \
+    ifconfig tnc1 10.0.0.2 pointopoint 10.0.0.1 netmask 255.255.255.252 up
+echo "  tnc1: 10.0.0.2 ↔ 10.0.0.1  [ns_b]  (KISS port 8002 / Direwolf B)"
 
 # ---------------------------------------------------------------------------
 # Done
@@ -207,8 +253,8 @@ echo "  tnc1: 10.0.0.2 ↔ 10.0.0.1  (via KISS port 8002 / Direwolf B)"
 echo ""
 echo "==> Setup complete."
 echo ""
-echo "    tnc0  10.0.0.1/30  (Direwolf A, PID $DW_A_PID)"
-echo "    tnc1  10.0.0.2/30  (Direwolf B, PID $DW_B_PID)"
+echo "    ns_a / tnc0  10.0.0.1/30  (Direwolf A, PID $DW_A_PID)"
+echo "    ns_b / tnc1  10.0.0.2/30  (Direwolf B, PID $DW_B_PID)"
 echo ""
 echo "    Test:  sudo ./scripts/test.sh"
 echo "    Stop:  sudo ./scripts/teardown.sh"
