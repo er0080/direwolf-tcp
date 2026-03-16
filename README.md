@@ -1,6 +1,6 @@
 # direwolf-tcp
 
-Point-to-point TCP/IP link test framework using [Direwolf](https://github.com/wb2osz/direwolf) TNC software, PulseAudio virtual audio cables, and [tncattach](https://github.com/markqvist/tncattach).
+Point-to-point TCP/IP link test framework using [Direwolf](https://github.com/wb2osz/direwolf) TNC software, PipeWire/PulseAudio virtual audio cables, and [tncattach](https://github.com/markqvist/tncattach).
 
 Two Direwolf instances simulate a full-duplex radio link over virtual audio. Each instance exposes a KISS-over-TCP port. `tncattach` binds those ports to Linux network interfaces, creating a routable `/30` point-to-point IP link — all without real radio hardware.
 
@@ -9,195 +9,120 @@ Two Direwolf instances simulate a full-duplex radio link over virtual audio. Eac
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Single Linux Host                        │
-│                                                                 │
-│  ┌──────────────┐    KISS/TCP:8001    ┌────────────────────┐   │
-│  │  tncattach   │◄──────────────────►│    Direwolf A      │   │
-│  │  tnc0        │                    │  MYCALL N0CALL-1   │   │
-│  │  10.0.0.1/30 │                    │  ADEVICE dw_a_rx   │   │
-│  └──────────────┘                    │          dw_a_tx   │   │
-│                                      └────────┬───────────┘   │
-│                                        RX from│  │TX to        │
-│                                  dw_b_to_a.mon│  │dw_a_to_b    │
-│                                               │  │             │
-│                   ┌───────────────────────────┘  │             │
-│                   │   PulseAudio Virtual Audio    │             │
-│                   │   ┌──────────────────────┐   │             │
-│                   │   │  null sink dw_a_to_b │◄──┘             │
-│                   │   │  null sink dw_b_to_a │                 │
-│                   │   └──────────────────────┘                 │
-│                   │                           │                 │
-│                   ▼ dw_a_to_b.monitor         ▼ dw_b_to_a      │
-│                   ┌────────────────────────────────────────┐   │
-│                   │    Direwolf B                          │   │
-│                   │  MYCALL N0CALL-2                       │   │
-│                   │  ADEVICE dw_b_rx  dw_b_tx              │   │
-│                   └────────────────┬───────────────────────┘   │
-│                          KISS/TCP:8002                          │
-│                   ┌────────────────▼───────────────────────┐   │
-│                   │  tncattach  tnc1  10.0.0.2/30          │   │
-│                   └────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Single Linux Host                           │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ netns ns_a                                                   │    │
+│  │   tnc0  10.0.0.1/30  ◄── tncattach fd ──► KISS/TCP:8001    │    │
+│  └──────────────────────────────────┬────────────────┬─────────┘    │
+│                           IP in/out │                │ KISS frames   │
+│                                     │       ┌────────▼───────────┐  │
+│                                     │       │    Direwolf A      │  │
+│                                     │       │  ADEVICE default   │  │
+│                                     │       └──────┬─────────────┘  │
+│                                     │     TX audio │  ▲ RX audio    │
+│                                     │   dw_a_to_b  │  │ dw_b_to_a  │
+│                                     │       ┌──────▼──┴──────────┐  │
+│                                     │       │  PipeWire null sinks│  │
+│                                     │       │  dw_a_to_b         │  │
+│                                     │       │  dw_b_to_a         │  │
+│                                     │       └──────┬─────────────┘  │
+│                                     │     RX audio │  ▲ TX audio    │
+│                                     │   dw_a_to_b  │  │ dw_b_to_a  │
+│                                     │       ┌──────▼─────────────┐  │
+│                                     │       │    Direwolf B      │  │
+│                                     │       │  ADEVICE default   │  │
+│                                     │       └────────┬───────────┘  │
+│                                     │                │ KISS frames   │
+│  ┌──────────────────────────────────▼────────────────┴─────────┐    │
+│  │ netns ns_b                                                   │    │
+│  │   tnc1  10.0.0.2/30  ◄── tncattach fd ──► KISS/TCP:8002    │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-**Data flow (A→B):** `ping` on `tnc0` → tncattach wraps IP in AX.25 → KISS/TCP to Direwolf A → Direwolf A modulates to AFSK audio → written to `dw_a_to_b` PulseAudio null sink → Direwolf B reads from `dw_a_to_b.monitor` → demodulates → KISS/TCP to tncattach on `tnc1` → IP packet delivered.
+**Data flow (A→B ping):**
+1. `ping` in `ns_a` sends ICMP echo request via `tnc0`
+2. tncattach A wraps the IP packet in a KISS frame → Direwolf A (port 8001)
+3. Direwolf A modulates AFSK audio → writes to `dw_a_to_b` PipeWire null sink
+4. Direwolf B reads from `dw_a_to_b.monitor` → demodulates → KISS frame → tncattach B
+5. tncattach B injects IP packet into `tnc1` inside `ns_b`
+6. Kernel in `ns_b` generates ICMP reply; reply travels back via the same chain in reverse
+
+**Why network namespaces?** Without isolation, both `10.0.0.1` and `10.0.0.2` are LOCAL addresses in the same kernel routing table. The kernel short-circuits ICMP replies via local delivery instead of routing them back through the radio chain — causing 100% packet loss. Each namespace has an isolated routing table with no conflicting entries.
+
+**TAP fd across namespaces:** tncattach runs in the host namespace (connecting to `localhost` KISS ports normally). After the `tnc` interface is created, `setup.sh` moves it into the appropriate namespace with `ip link set tncN netns ns_X`. TAP file descriptors remain valid across namespace moves, so tncattach continues to read/write packets without modification.
 
 ---
 
 ## Prerequisites
 
-### Packages
-
 ```bash
 # Debian/Ubuntu
-sudo apt update
-sudo apt install direwolf pulseaudio pulseaudio-utils \
-                 build-essential git net-tools iputils-ping
+sudo apt install direwolf pipewire-pulse \
+                 build-essential git net-tools iproute2 iputils-ping
 ```
 
-### tncattach
+> **PipeWire note:** This framework runs on PipeWire with its PulseAudio compatibility layer. `pactl` commands work as-is. No `~/.asoundrc` changes or ALSA-pulse plugin are needed.
+
+**tncattach** is included as a git submodule. Build it once after cloning:
 
 ```bash
-git clone https://github.com/markqvist/tncattach.git
-cd tncattach
-make
-sudo make install
+git submodule update --init
+cd tncattach && make
 ```
 
 ---
 
-## Setup
+## Quick Start
 
-### 1. Create PulseAudio Virtual Audio Cables
-
-Two null sinks model the full-duplex audio path between the two Direwolf instances.
+All setup, testing, and teardown is handled by scripts in `scripts/`. They require `sudo`.
 
 ```bash
-# A→B direction: Direwolf A transmits, Direwolf B receives
-pactl load-module module-null-sink \
-    sink_name=dw_a_to_b \
-    rate=44100 \
-    sink_properties=device.description="DW_A_to_B"
+# Bring everything up
+sudo ./scripts/setup.sh
 
-# B→A direction: Direwolf B transmits, Direwolf A receives
-pactl load-module module-null-sink \
-    sink_name=dw_b_to_a \
-    rate=44100 \
-    sink_properties=device.description="DW_B_to_A"
+# Run connectivity tests
+sudo ./scripts/test.sh
+
+# Tear everything down
+sudo ./scripts/teardown.sh
 ```
 
-Verify:
-```bash
-pactl list short sinks | grep dw_
-pactl list short sources | grep dw_
-# Expect: dw_a_to_b, dw_b_to_a (sinks) and their .monitor sources
-```
+---
 
-### 2. Configure ALSA/PulseAudio Shims
+## What `setup.sh` Does
 
-Add to `~/.asoundrc`:
-
-```
-# Direwolf A: TX into dw_a_to_b, RX from dw_b_to_a.monitor
-pcm.dw_a_tx { type pulse; device "dw_a_to_b"; }
-pcm.dw_a_rx { type pulse; device "dw_b_to_a.monitor"; }
-
-# Direwolf B: TX into dw_b_to_a, RX from dw_a_to_b.monitor
-pcm.dw_b_tx { type pulse; device "dw_b_to_a"; }
-pcm.dw_b_rx { type pulse; device "dw_a_to_b.monitor"; }
-```
-
-### 3. Direwolf Configuration Files
-
-**`config/dw-a.conf`** — Direwolf instance A:
-
-```
-ADEVICE  dw_a_rx  dw_a_tx
-
-CHANNEL 0
-MYCALL  N0CALL-1
-MODEM   1200
-TXDELAY 3
-TXTAIL  3
-PACLEN  240
-
-AGWPORT 8000
-KISSPORT 8001
-```
-
-**`config/dw-b.conf`** — Direwolf instance B:
-
-```
-ADEVICE  dw_b_rx  dw_b_tx
-
-CHANNEL 0
-MYCALL  N0CALL-2
-MODEM   1200
-TXDELAY 3
-TXTAIL  3
-PACLEN  240
-
-AGWPORT 8010
-KISSPORT 8002
-```
-
-> `TXDELAY`/`TXTAIL` are in units of 10 ms. Values of 3 = 30 ms each are sufficient with no real PTT hardware. No `PTT` line is needed; omitting it disables PTT keying.
-
-### 4. Launch Direwolf Instances
-
-```bash
-direwolf -c config/dw-a.conf &
-direwolf -c config/dw-b.conf &
-```
-
-Confirm both KISS TCP ports are listening:
-```bash
-ss -tlnp | grep -E '800[12]'
-```
-
-### 5. Attach Network Interfaces with tncattach
-
-```bash
-# Interface tnc0 for Direwolf A — IP 10.0.0.1, peer 10.0.0.2
-sudo tncattach -T -H localhost -P 8001 --mtu 236 --noipv6 --noup
-sudo ifconfig tnc0 10.0.0.1 pointopoint 10.0.0.2 netmask 255.255.255.252 up
-
-# Interface tnc1 for Direwolf B — IP 10.0.0.2, peer 10.0.0.1
-sudo tncattach -T -H localhost -P 8002 --mtu 236 --noipv6 --noup
-sudo ifconfig tnc1 10.0.0.2 pointopoint 10.0.0.1 netmask 255.255.255.252 up
-```
-
-Verify interfaces are up:
-```bash
-ip addr show tnc0
-ip addr show tnc1
-```
+1. **Virtual audio sinks** — creates two PipeWire null sinks (`dw_a_to_b`, `dw_b_to_a`) via `pactl`
+2. **Direwolf A** — launches with `ADEVICE default default`; after startup, moves its audio streams to the correct sinks via `pactl move-sink-input` / `pactl move-source-output`
+3. **Direwolf B** — same, with audio wired in the opposite direction
+4. **Namespaces** — creates `ns_a` and `ns_b` with isolated routing tables
+5. **tncattach A** — connects to `localhost:8001`; the resulting `tnc0` is moved into `ns_a` and configured as `10.0.0.1 ↔ 10.0.0.2`
+6. **tncattach B** — connects to `localhost:8002`; the resulting `tnc0` (re-created after A's was moved) is moved into `ns_b`, renamed `tnc1`, and configured as `10.0.0.2 ↔ 10.0.0.1`
 
 ---
 
 ## Testing
 
-### Ping
+`test.sh` checks interfaces, KISS ports, audio sinks, then runs pings both ways:
 
 ```bash
-# Send ICMP from tnc0 (10.0.0.1) to tnc1 (10.0.0.2)
-ping -c 4 -I tnc0 10.0.0.2
-
-# Reverse direction
-ping -c 4 -I tnc1 10.0.0.1
+sudo ./scripts/test.sh
+# or with a custom count:
+sudo ./scripts/test.sh --count 10
 ```
 
-Each round-trip traverses: tncattach → KISS/TCP → Direwolf modulate → PulseAudio null sink → PulseAudio monitor → Direwolf demodulate → KISS/TCP → tncattach.
-
-### Throughput
-
+Manual ping:
 ```bash
-# Rough bandwidth test (requires iperf3 on both "ends")
-# Since both sides are on the same host, use network namespaces or
-# simply bind iperf3 to the interface addresses:
-iperf3 -s -B 10.0.0.2 &
-iperf3 -c 10.0.0.2 -B 10.0.0.1
+ip netns exec ns_a ping -c 4 10.0.0.2   # A→B
+ip netns exec ns_b ping -c 4 10.0.0.1   # B→A
+```
+
+Manual throughput test:
+```bash
+ip netns exec ns_b iperf3 -s -B 10.0.0.2 &
+ip netns exec ns_a iperf3 -c 10.0.0.2
 ```
 
 Expected throughput at 1200 baud AFSK is approximately 100–150 bytes/sec effective payload.
@@ -206,54 +131,33 @@ Expected throughput at 1200 baud AFSK is approximately 100–150 bytes/sec effec
 
 ## Port and Address Reference
 
-| Component         | Parameter     | Value            |
-|-------------------|---------------|------------------|
-| Direwolf A        | AGWPORT       | 8000             |
-| Direwolf A        | KISSPORT      | 8001             |
-| Direwolf B        | AGWPORT       | 8010             |
-| Direwolf B        | KISSPORT      | 8002             |
-| tncattach A       | Interface     | tnc0             |
-| tncattach A       | IPv4          | 10.0.0.1/30      |
-| tncattach A       | Peer          | 10.0.0.2         |
-| tncattach B       | Interface     | tnc1             |
-| tncattach B       | IPv4          | 10.0.0.2/30      |
-| tncattach B       | Peer          | 10.0.0.1         |
-| PulseAudio sink   | A→B           | dw_a_to_b        |
-| PulseAudio source | B reads A     | dw_a_to_b.monitor|
-| PulseAudio sink   | B→A           | dw_b_to_a        |
-| PulseAudio source | A reads B     | dw_b_to_a.monitor|
-
----
-
-## Teardown
-
-```bash
-# Kill tncattach and direwolf
-sudo pkill tncattach
-pkill direwolf
-
-# Remove virtual audio devices (replace module IDs with actual values from pactl list)
-pactl unload-module module-null-sink
-```
+| Component         | Parameter     | Value              |
+|-------------------|---------------|--------------------|
+| Direwolf A        | AGWPORT       | 8000               |
+| Direwolf A        | KISSPORT      | 8001               |
+| Direwolf B        | AGWPORT       | 8010               |
+| Direwolf B        | KISSPORT      | 8002               |
+| tncattach A       | Interface     | tnc0 (in ns_a)     |
+| tncattach A       | IPv4          | 10.0.0.1/30        |
+| tncattach A       | Peer          | 10.0.0.2           |
+| tncattach B       | Interface     | tnc1 (in ns_b)     |
+| tncattach B       | IPv4          | 10.0.0.2/30        |
+| tncattach B       | Peer          | 10.0.0.1           |
+| PipeWire sink     | A→B           | dw_a_to_b          |
+| PipeWire monitor  | B reads A TX  | dw_a_to_b.monitor  |
+| PipeWire sink     | B→A           | dw_b_to_a          |
+| PipeWire monitor  | A reads B TX  | dw_b_to_a.monitor  |
 
 ---
 
 ## Tuning Notes
 
-- **PACLEN vs MTU**: `PACLEN` should equal `MTU + 4` to account for AX.25 framing. With `--mtu 236`, set `PACLEN 240`.
-- **TXDELAY/TXTAIL**: In loopback testing with no real radio hardware, 30–50 ms (values 3–5) is sufficient. Real radio use typically requires 300 ms+ depending on the radio.
-- **`--noipv6`**: Strongly recommended with tncattach to prevent IPv6 neighbor discovery traffic from consuming bandwidth on a 1200-baud link.
-- **Audio underruns**: If packet loss occurs due to audio buffer issues, tune PulseAudio in `/etc/pulse/daemon.conf`:
-  ```
-  default-fragment-size-msec = 5
-  default-fragments = 4
-  ```
-- **Modem speed**: `MODEM 1200` (Bell 202 AFSK) is the baseline. Both direwolf instances must use the same modem type and speed.
-- **dhcpcd conflict** (Raspberry Pi / Debian): Prevent dhcpcd from managing the TNC interfaces:
-  ```
-  # /etc/dhcpcd.conf
-  denyinterfaces tnc0 tnc1
-  ```
+- **PACLEN vs MTU**: `PACLEN` in direwolf.conf must equal `tncattach --mtu` + 4. Current values: `PACLEN 240`, `--mtu 236`.
+- **TXDELAY/TXTAIL**: Values of 3 (= 30 ms) are sufficient with no real PTT hardware. Real radio use requires 300 ms+ depending on the radio.
+- **`--noipv6`**: Prevents IPv6 neighbor discovery from consuming bandwidth on the 1200-baud link.
+- **Audio level**: Direwolf may warn "Audio input level is too high." This is cosmetic at loopback levels — decoding still works. Reduce the null sink volume with `pactl set-sink-volume dw_a_to_b 50%` if desired.
+- **Audio stream routing**: `setup.sh` identifies each direwolf's PipeWire streams by taking a before/after snapshot of sink-input and source-output IDs. PipeWire's ALSA layer does not expose `application.process.id` for ALSA clients, so PID-based matching does not work.
+- **Modem speed**: `MODEM 1200` (Bell 202 AFSK) on both instances. They must match.
 
 ---
 
@@ -261,5 +165,5 @@ pactl unload-module module-null-sink
 
 - [Direwolf](https://github.com/wb2osz/direwolf) — WB2OSZ
 - [tncattach](https://github.com/markqvist/tncattach) — Mark Qvist
-- [PulseAudio Modules](https://www.freedesktop.org/wiki/Software/PulseAudio/Documentation/User/Modules/)
+- [PipeWire](https://pipewire.org/) / PulseAudio compatibility layer
 - [Direwolf User Guide](https://github.com/wb2osz/direwolf/tree/master/doc)
