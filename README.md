@@ -164,6 +164,56 @@ Expected throughput at 1200 baud AFSK is approximately 100–150 bytes/sec effec
 
 ---
 
+## RF Deployment
+
+`config/dw-rf.conf` is a ready-to-edit template for deploying one station on a real half-duplex radio link. Copy it to each machine, customise the fields marked with `←`, and point tncattach at `localhost:8001`.
+
+### What changes from the virtual setup
+
+| Parameter | Virtual | RF | Why |
+|-----------|---------|-----|-----|
+| `ADEVICE` | `default default` | `plughw:1,0 plughw:1,0` | Real sound card; PipeWire null sinks don't exist on RF machines |
+| `ARATE` | `48000` | Match card native rate | Avoid resampling artifacts |
+| `FULLDUP` | `ON` | **Omitted** (defaults OFF) | Radio is half-duplex; one station at a time |
+| `TXDELAY` | `3` (30 ms) | `20` (200 ms) | Time for PTT to key up the radio before audio starts |
+| `TXTAIL` | `3` (30 ms) | `5` (50 ms) | Audio decay time before PTT drops and radio returns to RX |
+| `PERSIST` | not set | `255` | See below |
+| `SLOTTIME` | not set | `1` (10 ms) | See below |
+| `PTT` | omitted | hardware-specific | Must key the radio |
+
+### PERSIST and SLOTTIME for a dedicated P2P link
+
+Direwolf's default CSMA algorithm (p-persistent) draws a random number each slot and transmits only if it beats PERSIST. This is designed to reduce collisions on **shared** channels with many stations. On a **dedicated** point-to-point link there is no other traffic to collide with, so the random backoff only adds latency.
+
+Setting `PERSIST 255` tells Direwolf to transmit immediately whenever it detects the channel is clear — no random wait. `SLOTTIME 1` (10 ms) adds just enough jitter that if both ends see the channel go clear at the exact same moment (possible during TCP bulk transfers with simultaneous data and ACK) they won't both fire in the same audio sample.
+
+For a **shared** channel, lower PERSIST (e.g. 63) and increase SLOTTIME (e.g. 10–20) to reduce collision probability.
+
+### PTT hardware options
+
+```
+PTT  /dev/ttyUSB0  RTS          # serial port, RTS pin
+PTT  /dev/ttyUSB0  DTR          # serial port, DTR pin
+PTT  /dev/ttyUSB0  RTS -        # add "-" to invert polarity
+PTT  GPIO 17                    # Raspberry Pi BCM pin 17
+PTT  GPIO -18                   # BCM pin 18, active-low
+PTT  CM108                      # CM108/CM119 USB audio chip GPIO
+```
+
+### Audio levels on RF
+
+Do **not** use the 65% PipeWire volume trick — that's specific to the virtual null-sink setup. On RF hardware, tune your radio's mic gain until Direwolf's log shows `audio level = ~50`. Too high causes AFSK clipping and CRC failures; too low causes missed frames.
+
+### Expected performance
+
+At 1200 baud AFSK with PERSIST 255 / SLOTTIME 1:
+
+- **RTT**: ~1500–1700 ms (two back-to-back 900 ms transmissions + real TXDELAY/TXTAIL, no CSMA wait)
+- **ICMP ping**: will show occasional packet loss — this is normal for any half-duplex RF medium
+- **TCP**: handles retransmission at the transport layer; file transfers and SSH sessions work reliably despite occasional frame loss at the radio layer
+
+---
+
 ## References
 
 - [Direwolf](https://github.com/wb2osz/direwolf) — WB2OSZ
