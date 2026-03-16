@@ -212,13 +212,16 @@ ip netns exec ns_a \
     ifconfig tnc0 10.0.0.1 pointopoint 10.0.0.2 netmask 255.255.255.252 up
 echo "  tnc0: 10.0.0.1 ↔ 10.0.0.2  [ns_a]  (KISS port 8001 / Direwolf A)"
 
-# --- tncattach B: connect to localhost, then move tnc1 into ns_b ---
+# --- tncattach B: connect to localhost, then move tnc into ns_b ---
+# After tnc0 was moved to ns_a, the host namespace has no tnc0, so
+# tncattach B will create tnc0 again.  Move it to ns_b and rename it tnc1.
 "$TNCATTACH" -T -H localhost -P 8002 --mtu 236 --noipv6 --noup &
 TNCB_PID=$!
 echo "$TNCB_PID" >> "$PIDFILE"
 
-wait_for "tnc1 created in host namespace" "ip link show tnc1"
-ip link set tnc1 netns ns_b
+wait_for "tnc0 created in host namespace (for B)" "ip link show tnc0"
+ip link set tnc0 netns ns_b
+ip netns exec ns_b ip link set tnc0 name tnc1
 ip netns exec ns_b \
     ifconfig tnc1 10.0.0.2 pointopoint 10.0.0.1 netmask 255.255.255.252 up
 echo "  tnc1: 10.0.0.2 ↔ 10.0.0.1  [ns_b]  (KISS port 8002 / Direwolf B)"
