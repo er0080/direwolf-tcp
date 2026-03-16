@@ -63,22 +63,13 @@ wait_for() {
     echo "  OK: $desc"
 }
 
-# Return sink-input ID(s) for a given PID
-sink_input_for_pid() {
-    local pid="$1"
-    $PACTL_AS_USER list sink-inputs | awk -v pid="\"$pid\"" '
-        /^Sink Input #/ { id = substr($3, 2) }
-        /application\.process\.id/ && index($0, pid) { print id }
-    '
-}
-
-# Return source-output ID(s) for a given PID
-source_output_for_pid() {
-    local pid="$1"
-    $PACTL_AS_USER list source-outputs | awk -v pid="\"$pid\"" '
-        /^Source Output #/ { id = substr($3, 2) }
-        /application\.process\.id/ && index($0, pid) { print id }
-    '
+# Return IDs present in current stream list that are NOT in $2 (before-snapshot).
+# Usage: new_stream_ids <sink-inputs|source-outputs> "$BEFORE_VAR"
+new_stream_ids() {
+    local type="$1" before="$2"
+    $PACTL_AS_USER list short "$type" | awk '{print $1}' | while read -r id; do
+        echo "$before" | grep -qx "$id" || echo "$id"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -110,13 +101,16 @@ echo "  Monitors: dw_a_to_b.monitor  dw_b_to_a.monitor"
 echo ""
 echo "==> Starting Direwolf A (KISS port 8001, AGW port 8000)..."
 
+# Snapshot existing streams before launch so we can identify new ones by diff
+BEFORE_SI=$($PACTL_AS_USER list short sink-inputs    | awk '{print $1}')
+BEFORE_SO=$($PACTL_AS_USER list short source-outputs | awk '{print $1}')
+
 sudo -u "$REAL_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     direwolf -c "$ROOT/config/dw-a.conf" \
     > "$LOG_DIR/dw-a.log" 2>&1 &
 
 wait_for "Direwolf A KISS port 8001" "ss -tlnp | grep -q :8001"
 
-# $! is the sudo wrapper PID — get the real direwolf PID via pgrep
 DW_A_PID=$(pgrep -n -u "$REAL_USER" direwolf)
 echo "$DW_A_PID" >> "$PIDFILE"
 echo "  Direwolf A PID: $DW_A_PID"
@@ -125,19 +119,17 @@ echo "  Direwolf A PID: $DW_A_PID"
 echo "  Routing Direwolf A audio..."
 sleep 1   # give ALSA streams a moment to register in PipeWire
 
-SI_A=$(sink_input_for_pid "$DW_A_PID")
-SO_A=$(source_output_for_pid "$DW_A_PID")
+SI_A=$(new_stream_ids sink-inputs    "$BEFORE_SI" | head -1)
+SO_A=$(new_stream_ids source-outputs "$BEFORE_SO" | head -1)
 
 if [[ -z "$SI_A" || -z "$SO_A" ]]; then
-    echo "ERROR: Could not find PipeWire streams for Direwolf A (PID $DW_A_PID)" >&2
-    echo "  Sink inputs:"  >&2
-    $PACTL_AS_USER list sink-inputs | grep -E "Sink Input|process.id" >&2
-    echo "  Source outputs:" >&2
-    $PACTL_AS_USER list source-outputs | grep -E "Source Output|process.id" >&2
+    echo "ERROR: Could not find new PipeWire streams for Direwolf A" >&2
+    echo "  Sink inputs now:"    >&2; $PACTL_AS_USER list short sink-inputs    >&2
+    echo "  Source outputs now:" >&2; $PACTL_AS_USER list short source-outputs >&2
     exit 1
 fi
 
-$PACTL_AS_USER move-sink-input "$SI_A" dw_a_to_b
+$PACTL_AS_USER move-sink-input   "$SI_A" dw_a_to_b
 $PACTL_AS_USER move-source-output "$SO_A" dw_b_to_a.monitor
 echo "  Sink-input $SI_A → dw_a_to_b (TX)"
 echo "  Source-output $SO_A → dw_b_to_a.monitor (RX)"
@@ -148,13 +140,16 @@ echo "  Source-output $SO_A → dw_b_to_a.monitor (RX)"
 echo ""
 echo "==> Starting Direwolf B (KISS port 8002, AGW port 8010)..."
 
+# Snapshot again — A's streams are now "before" for the B diff
+BEFORE_SI=$($PACTL_AS_USER list short sink-inputs    | awk '{print $1}')
+BEFORE_SO=$($PACTL_AS_USER list short source-outputs | awk '{print $1}')
+
 sudo -u "$REAL_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     direwolf -c "$ROOT/config/dw-b.conf" \
     > "$LOG_DIR/dw-b.log" 2>&1 &
 
 wait_for "Direwolf B KISS port 8002" "ss -tlnp | grep -q :8002"
 
-# pgrep -n gets the newest direwolf — at this point that is always B
 DW_B_PID=$(pgrep -n -u "$REAL_USER" direwolf)
 echo "$DW_B_PID" >> "$PIDFILE"
 echo "  Direwolf B PID: $DW_B_PID"
@@ -162,15 +157,17 @@ echo "  Direwolf B PID: $DW_B_PID"
 echo "  Routing Direwolf B audio..."
 sleep 1
 
-SI_B=$(sink_input_for_pid "$DW_B_PID")
-SO_B=$(source_output_for_pid "$DW_B_PID")
+SI_B=$(new_stream_ids sink-inputs    "$BEFORE_SI" | head -1)
+SO_B=$(new_stream_ids source-outputs "$BEFORE_SO" | head -1)
 
 if [[ -z "$SI_B" || -z "$SO_B" ]]; then
-    echo "ERROR: Could not find PipeWire streams for Direwolf B (PID $DW_B_PID)" >&2
+    echo "ERROR: Could not find new PipeWire streams for Direwolf B" >&2
+    echo "  Sink inputs now:"    >&2; $PACTL_AS_USER list short sink-inputs    >&2
+    echo "  Source outputs now:" >&2; $PACTL_AS_USER list short source-outputs >&2
     exit 1
 fi
 
-$PACTL_AS_USER move-sink-input "$SI_B" dw_b_to_a
+$PACTL_AS_USER move-sink-input    "$SI_B" dw_b_to_a
 $PACTL_AS_USER move-source-output "$SO_B" dw_a_to_b.monitor
 echo "  Sink-input $SI_B → dw_b_to_a (TX)"
 echo "  Source-output $SO_B → dw_a_to_b.monitor (RX)"
