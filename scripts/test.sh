@@ -36,13 +36,13 @@ run_test() {
 echo "==> Interface check"
 run_test "tnc0 exists and is UP"  ip link show tnc0
 run_test "tnc1 exists and is UP"  ip link show tnc1
-run_test "tnc0 has address 10.0.0.1" ip addr show tnc0 | grep -q 10.0.0.1
-run_test "tnc1 has address 10.0.0.2" ip addr show tnc1 | grep -q 10.0.0.2
+run_test "tnc0 has address 10.0.0.1" bash -c "ip addr show tnc0 | grep -q 10.0.0.1"
+run_test "tnc1 has address 10.0.0.2" bash -c "ip addr show tnc1 | grep -q 10.0.0.2"
 
 echo ""
 echo "==> KISS port check"
-run_test "Direwolf A KISS port 8001 listening" ss -tlnp | grep -q :8001
-run_test "Direwolf B KISS port 8002 listening" ss -tlnp | grep -q :8002
+run_test "Direwolf A KISS port 8001 listening" bash -c "ss -tlnp | grep -q :8001"
+run_test "Direwolf B KISS port 8002 listening" bash -c "ss -tlnp | grep -q :8002"
 
 echo ""
 echo "==> Audio routing check"
