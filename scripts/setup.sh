@@ -113,10 +113,13 @@ echo "==> Starting Direwolf A (KISS port 8001, AGW port 8000)..."
 sudo -u "$REAL_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     direwolf -c "$ROOT/config/dw-a.conf" \
     > "$LOG_DIR/dw-a.log" 2>&1 &
-DW_A_PID=$!
-echo "$DW_A_PID" >> "$PIDFILE"
 
 wait_for "Direwolf A KISS port 8001" "ss -tlnp | grep -q :8001"
+
+# $! is the sudo wrapper PID — get the real direwolf PID via pgrep
+DW_A_PID=$(pgrep -n -u "$REAL_USER" direwolf)
+echo "$DW_A_PID" >> "$PIDFILE"
+echo "  Direwolf A PID: $DW_A_PID"
 
 # Route Direwolf A audio: TX → dw_a_to_b, RX ← dw_b_to_a.monitor
 echo "  Routing Direwolf A audio..."
@@ -148,10 +151,13 @@ echo "==> Starting Direwolf B (KISS port 8002, AGW port 8010)..."
 sudo -u "$REAL_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     direwolf -c "$ROOT/config/dw-b.conf" \
     > "$LOG_DIR/dw-b.log" 2>&1 &
-DW_B_PID=$!
-echo "$DW_B_PID" >> "$PIDFILE"
 
 wait_for "Direwolf B KISS port 8002" "ss -tlnp | grep -q :8002"
+
+# pgrep -n gets the newest direwolf — at this point that is always B
+DW_B_PID=$(pgrep -n -u "$REAL_USER" direwolf)
+echo "$DW_B_PID" >> "$PIDFILE"
+echo "  Direwolf B PID: $DW_B_PID"
 
 echo "  Routing Direwolf B audio..."
 sleep 1
