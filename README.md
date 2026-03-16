@@ -94,7 +94,7 @@ sudo ./scripts/teardown.sh
 
 ## What `setup.sh` Does
 
-1. **Virtual audio sinks** — creates two PipeWire null sinks (`dw_a_to_b`, `dw_b_to_a`) via `pactl`
+1. **Virtual audio sinks** — creates two PipeWire null sinks (`dw_a_to_b`, `dw_b_to_a`) at 48000 Hz via `pactl`; sets each to 65% volume to keep Direwolf's input level ~55 (target: ~50)
 2. **Direwolf A** — launches with `ADEVICE default default`; after startup, moves its audio streams to the correct sinks via `pactl move-sink-input` / `pactl move-source-output`
 3. **Direwolf B** — same, with audio wired in the opposite direction
 4. **Namespaces** — creates `ns_a` and `ns_b` with isolated routing tables
@@ -153,11 +153,14 @@ Expected throughput at 1200 baud AFSK is approximately 100–150 bytes/sec effec
 ## Tuning Notes
 
 - **PACLEN vs MTU**: `PACLEN` in direwolf.conf must equal `tncattach --mtu` + 4. Current values: `PACLEN 240`, `--mtu 236`.
+- **FULLDUP ON**: Required for this virtual loopback setup. Direwolf defaults to half-duplex CSMA (listen-before-talk with random backoff). Since A's TX and B's TX use separate, independent audio paths, there is no real contention — but without `FULLDUP ON`, Direwolf still waits for channel silence and random slot delays, causing ~2200 ms latency and ~40–60% packet loss. `FULLDUP ON` bypasses CSMA and transmits immediately, yielding the expected ~1300 ms RTT (two back-to-back 900 ms transmissions at 1200 baud). Note: Direwolf 1.7 requires `ON`/`OFF` — `1`/`0` is silently rejected. Do not use `FULLDUP ON` on a real shared radio channel.
 - **TXDELAY/TXTAIL**: Values of 3 (= 30 ms) are sufficient with no real PTT hardware. Real radio use requires 300 ms+ depending on the radio.
 - **`--noipv6`**: Prevents IPv6 neighbor discovery from consuming bandwidth on the 1200-baud link.
-- **Audio level**: Direwolf may warn "Audio input level is too high." This is cosmetic at loopback levels — decoding still works. Reduce the null sink volume with `pactl set-sink-volume dw_a_to_b 50%` if desired.
+- **Audio level**: Direwolf recommends an input level of ~50. At 100% sink volume the level is ~199 (clipping), which corrupts the AFSK waveform and causes every frame to fail AX.25 CRC. PipeWire applies volume on a **cubic curve**: `gain = (pct/100)³`, so `25%` → gain 0.016×, not 0.25×. `setup.sh` sets sinks to 65% (gain ≈ 0.27×, level ≈ 55). If decode problems recur, check `logs/dw-*.log` for `audio level =` and re-tune: `target_pct = (target_level / current_level_at_100pct)^(1/3) × 100`.
 - **Audio stream routing**: `setup.sh` identifies each direwolf's PipeWire streams by taking a before/after snapshot of sink-input and source-output IDs. PipeWire's ALSA layer does not expose `application.process.id` for ALSA clients, so PID-based matching does not work.
 - **Modem speed**: `MODEM 1200` (Bell 202 AFSK) on both instances. They must match.
+- **`(Not AX.25)` log messages**: tncattach passes raw IP packets through KISS without AX.25 callsign headers. Direwolf logs every received frame that doesn't parse as AX.25 as `(Not AX.25)` — this is expected and harmless. Direwolf still forwards the decoded frame to the KISS client (tncattach). These messages do not indicate packet loss.
+- **Sample rate**: Both null sinks and both Direwolf instances use 48000 Hz (`ARATE 48000`). This matches PipeWire's native rate and avoids a resampling stage that could introduce audio artifacts.
 
 ---
 

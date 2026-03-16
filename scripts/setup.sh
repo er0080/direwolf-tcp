@@ -82,15 +82,21 @@ $PACTL_AS_USER list short modules | awk '/module-null-sink.*dw_[ab]_to_[ab]/ {pr
     | xargs -r -I{} $PACTL_AS_USER unload-module {}
 
 $PACTL_AS_USER load-module module-null-sink \
-    sink_name=dw_a_to_b rate=44100 \
+    sink_name=dw_a_to_b rate=48000 \
     sink_properties=device.description="DW_A_to_B" > /dev/null
 
 $PACTL_AS_USER load-module module-null-sink \
-    sink_name=dw_b_to_a rate=44100 \
+    sink_name=dw_b_to_a rate=48000 \
     sink_properties=device.description="DW_B_to_A" > /dev/null
 
 wait_for "dw_a_to_b sink visible" "$PACTL_AS_USER list short sinks | grep -q dw_a_to_b"
 wait_for "dw_b_to_a sink visible" "$PACTL_AS_USER list short sinks | grep -q dw_b_to_a"
+
+# Reduce sink volume to prevent AFSK clipping.  At 100% the monitor output
+# saturates Direwolf's input (level ~199); Direwolf recommends ~50.
+# 25% brings the level into the target range.
+$PACTL_AS_USER set-sink-volume dw_a_to_b 65%
+$PACTL_AS_USER set-sink-volume dw_b_to_a 65%
 
 echo "  Sinks: dw_a_to_b  dw_b_to_a"
 echo "  Monitors: dw_a_to_b.monitor  dw_b_to_a.monitor"

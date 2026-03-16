@@ -75,3 +75,7 @@ tail -f logs/dw-b.log                           # direwolf B output
 - **AGWPORT must differ** between the two instances (8000 vs 8010) to avoid port conflicts on the same host.
 - **pactl must run as the desktop user**: PipeWire sockets belong to the user session. When running under `sudo`, all `pactl` calls use `sudo -u $REAL_USER XDG_RUNTIME_DIR=/run/user/$REAL_UID pactl`.
 - **Network namespaces are required**: Do not remove them. Without isolation, ICMP replies are locally delivered and pings fail with 100% packet loss.
+- **`FULLDUP ON` is required**: Direwolf defaults to half-duplex CSMA. Without it, Direwolf waits for channel silence + random backoff before transmitting, causing ~2200 ms latency and ~40–60% packet loss even though the virtual audio paths are fully independent. `FULLDUP ON` bypasses CSMA entirely. Direwolf 1.7 requires `ON`/`OFF` — `1`/`0` is silently rejected with a startup error.
+- **Audio volume must be 65%**: At 100% sink volume, Direwolf's input level is ~199 (clipping), causing all frames to fail CRC. PipeWire's volume is cubic: `gain = (pct/100)³`, so 65% → gain ≈ 0.27× → level ≈ 55. `setup.sh` sets this automatically.
+- **Sample rate must be 48000 Hz**: Null sinks and `ARATE` must both use 48000 Hz to match PipeWire's native rate. Mismatches cause resampling artifacts that corrupt AFSK decoding.
+- **`(Not AX.25)` log messages are expected**: tncattach sends raw IP through KISS without AX.25 headers. Direwolf logs these as `(Not AX.25)` but still forwards them to the KISS client. This is normal for this setup.
