@@ -16,6 +16,9 @@ See `README.md` for full architecture, setup steps, and tuning notes.
 | Direwolf B (`config/dw-b.conf`) | Modem instance B — KISS TCP port 8002, AGWPORT 8010, `ADEVICE default default` |
 | PipeWire null sinks | `dw_a_to_b` and `dw_b_to_a` — virtual full-duplex audio cable |
 | `scripts/setup.sh` | Creates sinks, launches direwolf, routes audio streams, creates namespaces, attaches tncattach |
+| `scripts/rf-setup.sh` | RF variant: launches Direwolf for IC-705 (ports 8000/8001) and IC-7300 (ports 8100/8101), creates namespaces, attaches tncattach — no PipeWire involved |
+| `scripts/rf-teardown.sh` | Stops RF Direwolf instances and tncattach, removes namespaces |
+| `scripts/rf-test.sh` | Pre-flight checks for RF link (interfaces, KISS ports, serial devices) then pings both ways |
 | tncattach (`tncattach/tncattach`) | Bridges KISS/TCP → TAP interfaces; built from git submodule |
 | Network namespaces | `ns_a` holds `tnc0` (10.0.0.1), `ns_b` holds `tnc1` (10.0.0.2) |
 
@@ -80,3 +83,7 @@ tail -f logs/dw-b.log                           # direwolf B output
 - **Sample rate must be 48000 Hz**: Null sinks and `ARATE` must both use 48000 Hz to match PipeWire's native rate. Mismatches cause resampling artifacts that corrupt AFSK decoding.
 - **`config/dw-rf.conf` is an RF deployment template**: do not modify it for virtual-testing purposes. The virtual test framework uses `dw-a.conf` / `dw-b.conf` only.
 - **`(Not AX.25)` log messages are expected**: tncattach sends raw IP through KISS without AX.25 headers. Direwolf logs these as `(Not AX.25)` but still forwards them to the KISS client. This is normal for this setup.
+- **Asymmetric DWAIT on RF**: `config/dw-705.conf` uses `DWAIT 5` (50 ms post-DCD delay); `config/dw-7300.conf` uses `DWAIT 0`. This gives IC-7300 priority — it wins the channel whenever both radios have queued frames. Do not set both to the same DWAIT value or collisions will recur.
+- **RF ping interval must exceed RTT**: At 2400 baud QPSK with TXDELAY 20 + TXTAIL 10, frame air time is ~860 ms and RTT is ~1700 ms. Using `ping -i 1` (default) causes the transmit queue to grow and produces back-to-back collisions. Always use `ping -i 3` or longer when testing the RF link.
+- **KISS has no flow control**: tncattach can feed frames faster than the radio can transmit. For sustained traffic, rate-limit with `tc tbf`. TCP self-limits via congestion control; ICMP does not.
+- **2400 QPSK requires matched SSB filter bandwidth**: Both radios must have TX bandwidth wide enough (~2.4 kHz) and matched. A narrower filter on the transmitting radio will cause systematic FEC corrections on every received frame even at correct audio levels.

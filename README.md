@@ -168,6 +168,34 @@ Expected throughput at 1200 baud AFSK is approximately 100–150 bytes/sec effec
 
 `config/dw-rf.conf` is a ready-to-edit template for deploying one station on a real half-duplex radio link. Copy it to each machine, customise the fields marked with `←`, and point tncattach at `localhost:8001`.
 
+### Two-radio single-machine setup (IC-705 + IC-7300)
+
+`config/dw-705.conf` and `config/dw-7300.conf` are tested configs for running both radios on one Linux machine. Three scripts handle this setup:
+
+```bash
+sudo ./scripts/rf-setup.sh      # start Direwolf × 2, namespaces, tncattach × 2
+sudo ./scripts/rf-test.sh       # pre-flight checks + ping both directions
+sudo ./scripts/rf-teardown.sh   # stop everything and clean up namespaces
+```
+
+**Port assignments:**
+
+| Radio | AGWPORT | KISSPORT | Namespace | Interface | Address |
+|-------|---------|----------|-----------|-----------|---------|
+| IC-705 | 8000 | 8001 | ns_a | tnc0 | 10.0.0.1/30 |
+| IC-7300 | 8100 | 8101 | ns_b | tnc1 | 10.0.0.2/30 |
+
+**Testing — use a ping interval longer than the RTT:**
+
+With TXDELAY 20, TXTAIL 10, and 2400 baud QPSK, each frame takes ~860 ms on air. Round-trip time is ~1700 ms. Standard `ping` at 1-second intervals sends the next packet before the previous reply returns, causing a growing transmit queue and back-to-back transmissions that collide. Use `-i 3` (3-second interval):
+
+```bash
+ip netns exec ns_a ping -c 10 -i 3 10.0.0.2   # A→B
+ip netns exec ns_b ping -c 10 -i 3 10.0.0.1   # B→A
+```
+
+`rf-test.sh` uses `-W 15` (15-second per-packet timeout) to accommodate the slow link but still sends at the default 1-second interval — acceptable for a short 5-packet burst but expect some loss if run longer.
+
 ### What changes from the virtual setup
 
 | Parameter | Virtual | RF | Why |
@@ -181,11 +209,13 @@ Expected throughput at 1200 baud AFSK is approximately 100–150 bytes/sec effec
 | `SLOTTIME` | not set | `1` (10 ms) | See below |
 | `PTT` | omitted | hardware-specific | Must key the radio |
 
-### PERSIST and SLOTTIME for a dedicated P2P link
+### PERSIST, SLOTTIME, and DWAIT for a dedicated P2P link
 
 Direwolf's default CSMA algorithm (p-persistent) draws a random number each slot and transmits only if it beats PERSIST. This is designed to reduce collisions on **shared** channels with many stations. On a **dedicated** point-to-point link there is no other traffic to collide with, so the random backoff only adds latency.
 
 Setting `PERSIST 255` tells Direwolf to transmit immediately whenever it detects the channel is clear — no random wait. `SLOTTIME 1` (10 ms) adds just enough jitter that if both ends see the channel go clear at the exact same moment (possible during TCP bulk transfers with simultaneous data and ACK) they won't both fire in the same audio sample.
+
+On a single machine with two radios sharing the same audio timing, both ends can see DCD drop at almost exactly the same instant. `DWAIT` adds an asymmetric per-station delay (units of 10 ms) after DCD drops before CSMA kicks in — giving one radio a guaranteed head start. In the IC-705 / IC-7300 configs, IC-7300 uses `DWAIT 0` (transmits immediately when clear) and IC-705 uses `DWAIT 5` (waits 50 ms). This ensures IC-7300 always wins the channel for its replies before IC-705 can queue the next ping.
 
 For a **shared** channel, lower PERSIST (e.g. 63) and increase SLOTTIME (e.g. 10–20) to reduce collision probability.
 
@@ -202,14 +232,48 @@ PTT  CM108                      # CM108/CM119 USB audio chip GPIO
 
 ### Audio levels on RF
 
-Do **not** use the 65% PipeWire volume trick — that's specific to the virtual null-sink setup. On RF hardware, tune your radio's mic gain until Direwolf's log shows `audio level = ~50`. Too high causes AFSK clipping and CRC failures; too low causes missed frames.
+Do **not** use the 65% PipeWire volume trick — that's specific to the virtual null-sink setup. On RF hardware, tune your radio's mic gain (or USB MOD level) until Direwolf's log shows `audio level = ~50`. Too high causes clipping and CRC failures; too low causes missed frames.
+
+The IC-705 has two separate USB audio level settings:
+- **USB AF Output Level** — controls receive audio going from the radio to the PC (what Direwolf hears)
+- **USB MOD Level** — controls transmit audio going from the PC into the radio modulator (what the radio transmits)
+
+These are independent. FEC corrections (`FX.25 XXXX` non-zero) on the receiving end point to the transmitting radio's MOD level or filter bandwidth being off. A clean signal at an appropriate audio level should decode with `FX.25 0000` on every frame.
+
+### 2400 QPSK and SSB bandwidth
+
+`MODEM 2400` (V.26 QPSK) requires ~2400 Hz of clean audio passband. SSB filters are typically 2.4–2.8 kHz — right at the limit. Ensure both radios have matched TX bandwidth settings that are wide enough to pass the full signal. A narrower filter on one radio will cause the received QPSK constellation to be distorted, producing FEC corrections even at a correct audio level.
+
+### Alternative modems
+
+If 2400 QPSK is marginal for your link conditions, alternatives within Direwolf:
+
+| Modem | Baud | Audio BW | Notes |
+|-------|------|----------|-------|
+| `MODEM 300` | 300 | ~600 Hz | True HF standard (AFSK 1600/1800 Hz), fits any SSB filter, very robust, ~8× slower |
+| `MODEM 1200` | 1200 | ~2700 Hz | VHF/UHF standard; usable on HF with wider filter |
+| `MODEM 2400` | 2400 QPSK | ~2400 Hz | Direwolf's ceiling for SSB |
+
+For better HF performance outside Direwolf, **ARDOP** (`ardopc`) is the practical open-source choice: HF SSB-optimized, adaptive 200–8000 bps, and it exposes a KISS TCP interface — tncattach connects to it identically to Direwolf. **VARA HF** is a high-performance proprietary alternative with a free basic tier.
+
+### KISS queuing and flow control
+
+KISS is a dumb pipe with no flow control — tncattach can push frames into the KISS socket faster than the radio can transmit them. For batch tests, use a ping interval that exceeds the RTT (see above). For continuous traffic, rate-limit the TNC interface with Linux `tc` to prevent the kernel from queueing faster than the radio link can drain:
+
+```bash
+# Limit to ~1200 bit/s to match 2400 baud QPSK effective payload throughput
+ip netns exec ns_a tc qdisc add dev tnc0 root tbf rate 1200bit burst 512 latency 500ms
+ip netns exec ns_b tc qdisc add dev tnc1 root tbf rate 1200bit burst 512 latency 500ms
+```
+
+TCP applications naturally self-limit via congestion control and do not require this workaround. ICMP (ping) does not self-limit.
 
 ### Expected performance
 
-At 1200 baud AFSK with PERSIST 255 / SLOTTIME 1:
+At 2400 baud QPSK with PERSIST 255 / SLOTTIME 1 / asymmetric DWAIT:
 
-- **RTT**: ~1500–1700 ms (two back-to-back 900 ms transmissions + real TXDELAY/TXTAIL, no CSMA wait)
-- **ICMP ping**: will show occasional packet loss — this is normal for any half-duplex RF medium
+- **RTT**: ~1700 ms (two back-to-back ~860 ms transmissions including TXDELAY 20 + TXTAIL 10, no CSMA wait)
+- **ICMP ping**: must use `-i 3` or longer to avoid transmit queuing; at 1 s intervals packets stack up and collide
 - **TCP**: handles retransmission at the transport layer; file transfers and SSH sessions work reliably despite occasional frame loss at the radio layer
 
 ---
