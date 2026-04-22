@@ -137,17 +137,29 @@ def parse_ardop_data_frames(buf: bytearray) -> list[tuple[bytes, bytes]]:
 
 
 # ── Half-duplex flow control constants ───────────────────────────────────────
-# After a FECRCV→DISC transition (we just received a frame), hold off before
-# transmitting.  Gives the remote station time to exit FECSEND and return to
-# DISC.  Keep short — the ARDOP leader (~1s preamble) already provides the
-# bulk of the turnaround margin.
-POST_RX_HOLDOFF = 0.8   # seconds
-
-# Settling delay before committing to FECSEND: gives ardopcf time to register
-# an incoming signal via BUSYDET before we start transmitting.  The ARDOP
-# preamble is ~1s, so 0.3s is sufficient to catch a signal that started
-# right as we saw DISC.
-TX_SETTLE_DELAY = 0.3   # seconds
+#
+# Three-layer protection against simultaneous TX (collisions):
+#
+#  POST_RX_HOLDOFF  — after receiving a frame (FECRCV→DISC), wait before
+#                     TX.  Prevents us from stepping on the remote station
+#                     while it is returning to DISC after its own TX.
+#
+#  POST_TX_YIELD    — after our own PTT goes FALSE, wait before TX again.
+#                     This is the critical layer for TCP: without it, a
+#                     bridge with a queue of segments fires them back-to-back,
+#                     never yielding the channel to the other side for ACKs.
+#                     Must be longer than POST_RX_HOLDOFF + TX_SETTLE_DELAY
+#                     so the remote has time to start its preamble before this
+#                     timer expires; once the preamble is audible, ardopcf
+#                     reports BUSY/FECRCV and we block automatically.
+#
+#  TX_SETTLE_DELAY  — final check after both holdoffs clear.  Gives ardopcf
+#                     time to register a signal that started right as DISC
+#                     was seen (BUSYDET detection lag).
+#
+POST_RX_HOLDOFF = 1.0   # seconds  (was 0.8 — increase for safety margin)
+POST_TX_YIELD   = 2.0   # seconds  (NEW — must be > POST_RX_HOLDOFF + TX_SETTLE_DELAY)
+TX_SETTLE_DELAY = 0.5   # seconds  (was 0.3)
 
 # ── Bridge ────────────────────────────────────────────────────────────────────
 class ArdopKissBridge:
@@ -182,10 +194,11 @@ class ArdopKissBridge:
         self.ardop_idle = asyncio.Event()
         self.ardop_idle.set()                  # assume idle at start
 
-        # Half-duplex flow control: after receiving a frame (FECRCV→DISC),
-        # hold off TX for POST_RX_HOLDOFF seconds so the remote station has
-        # time to fully return to DISC before we start our own transmission.
+        # Half-duplex flow control timers (monotonic timestamps).
+        # _post_rx_holdoff_until: set on FECRCV→DISC (we just finished receiving)
+        # _post_tx_yield_until:   set on PTT FALSE  (we just finished transmitting)
         self._post_rx_holdoff_until: float = 0.0
+        self._post_tx_yield_until:   float = 0.0
         self._last_ardop_state: str = 'DISC'
 
         # Reference to the current KISS client writer (one client at a time)
@@ -222,9 +235,6 @@ class ArdopKissBridge:
                 if msg.startswith('NEWSTATE'):
                     state = msg.split()[-1]
                     if state == 'DISC':
-                        # If we just finished receiving a frame, start the
-                        # post-RX hold-off to prevent immediately colliding
-                        # with the remote station returning to DISC.
                         if self._last_ardop_state == 'FECRCV':
                             self._post_rx_holdoff_until = time.monotonic() + POST_RX_HOLDOFF
                             self.log.debug('Post-RX hold-off %.1fs started', POST_RX_HOLDOFF)
@@ -235,6 +245,15 @@ class ArdopKissBridge:
                         self._last_ardop_state = state
                         self.ardop_idle.clear()
                         self.log.info('ARDOP state: %s', state)
+                elif msg.startswith('BUSY '):
+                    # ardopcf BUSYDET: channel energy detected.
+                    # Clear ardop_idle immediately so the TX loop does not
+                    # start transmitting before NEWSTATE FECRCV arrives.
+                    # Do NOT set ardop_idle on BUSY FALSE — only NEWSTATE DISC
+                    # is authoritative for "channel clear."
+                    if msg.split()[-1] == 'TRUE':
+                        self.ardop_idle.clear()
+                        self.log.info('BUSYDET: channel busy — TX suppressed')
                 elif msg.startswith('PTT '):
                     ptt_on = msg.split()[-1] == 'TRUE'
                     if self._ptt_serial is not None:
@@ -242,6 +261,11 @@ class ArdopKissBridge:
                         self.log.info('PTT %s → RTS on %s', 'ON' if ptt_on else 'OFF', self.ptt_port)
                     else:
                         self.log.debug('PTT %s (no --ptt-port configured)', msg.split()[-1])
+                    if not ptt_on:
+                        # Our transmission just ended.  Yield the channel so
+                        # the remote side can respond before we TX again.
+                        self._post_tx_yield_until = time.monotonic() + POST_TX_YIELD
+                        self.log.debug('Post-TX yield %.1fs started', POST_TX_YIELD)
 
     async def _ardop_cmd_writer(self, writer: asyncio.StreamWriter, cmd: str) -> None:
         """Send a single command to ardopcf command port."""
@@ -314,28 +338,38 @@ class ArdopKissBridge:
         while True:
             payload = await self.kiss_tx_queue.get()
 
-            # Wait until the channel is confirmed clear:
-            #   1. ardopcf must be in DISC state
-            #   2. any post-RX hold-off (after a FECRCV→DISC transition) must expire
-            #   3. re-verify DISC after a settling delay to catch incoming signals
-            #      that BUSYDET hasn't registered yet when DISC was first seen
+            # Wait until the channel is confirmed clear before TX.
+            # Three checks in order:
+            #   1. ardopcf must be in DISC (NEWSTATE DISC or no BUSY TRUE)
+            #   2. post-RX hold-off must have expired (we recently received)
+            #   3. post-TX yield must have expired (we recently transmitted)
+            #   4. TX_SETTLE_DELAY re-check: catches a signal that started
+            #      just as DISC was seen, before BUSYDET fires
             while True:
                 await self.ardop_idle.wait()
 
-                # Enforce post-RX hold-off
+                # Post-RX hold-off: we just received a frame
                 remaining = self._post_rx_holdoff_until - time.monotonic()
                 if remaining > 0:
                     self.log.debug('Post-RX hold-off: waiting %.1fs', remaining)
                     await asyncio.sleep(remaining)
-                    continue  # re-check ardop_idle
+                    continue
 
-                # Settling delay: gives ardopcf time to transition to FECRCV
-                # if an incoming signal is just starting (BUSYDET lag).
+                # Post-TX yield: we just transmitted — give remote a chance
+                # to respond before we grab the channel again
+                remaining = self._post_tx_yield_until - time.monotonic()
+                if remaining > 0:
+                    self.log.debug('Post-TX yield: waiting %.1fs', remaining)
+                    await asyncio.sleep(remaining)
+                    continue
+
+                # Final settle: ardopcf may not have reported BUSY yet for a
+                # signal that started right as the holdoffs cleared
                 await asyncio.sleep(TX_SETTLE_DELAY)
 
                 if self.ardop_idle.is_set():
-                    break   # still DISC after settling — safe to transmit
-                # Channel became busy during settling; go back and wait.
+                    break   # still DISC — safe to transmit
+                # Channel became busy during settling; loop back and wait.
 
             self.log.info('ARDOP TX FEC %d bytes', len(payload))
 

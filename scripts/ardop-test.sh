@@ -5,14 +5,13 @@
 #   --count N     number of ping packets each direction (default: 5)
 #   --interval S  ping interval in seconds (default: 12)
 #
-# NOTE: 4PSK.2000.100 frame time is ~4.5s each direction → RTT ~9s.
-# Use --interval >= 12 to prevent TX queue stacking and collisions.
-# The bridge adds a 3s post-RX hold-off after receiving each frame.
+# NOTE: 4PSK.2000.100 frame time ~4.5s + POST_TX_YIELD 2s + holdoffs → RTT ~12s.
+# Use --interval >= 15 to stay safely below RTT with the yield overhead.
 
 set -euo pipefail
 
 COUNT=5
-INTERVAL=12
+INTERVAL=15
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
