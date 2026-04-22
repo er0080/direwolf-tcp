@@ -206,6 +206,12 @@ class ArdopKissBridge:
         # yield timer is set in the right handler.
         self._transmitting: bool = False
 
+        # Set True by BUSY TRUE, cleared by BUSY FALSE.
+        # Checked at the TX settle step — does not touch ardop_idle so that
+        # a BUSY TRUE while already in DISC state cannot deadlock the bridge
+        # (ardopcf only sends NEWSTATE DISC on transitions, not re-announcements).
+        self._channel_busy: bool = False
+
         # Reference to the current KISS client writer (one client at a time)
         self._kiss_writer: asyncio.StreamWriter | None = None
 
@@ -261,14 +267,15 @@ class ArdopKissBridge:
                         self.ardop_idle.clear()
                         self.log.info('ARDOP state: %s', state)
                 elif msg.startswith('BUSY '):
-                    # ardopcf BUSYDET: channel energy detected.
-                    # Clear ardop_idle immediately so the TX loop does not
-                    # start transmitting before NEWSTATE FECRCV arrives.
-                    # Do NOT set ardop_idle on BUSY FALSE — only NEWSTATE DISC
-                    # is authoritative for "channel clear."
-                    if msg.split()[-1] == 'TRUE':
-                        self.ardop_idle.clear()
-                        self.log.info('BUSYDET: channel busy — TX suppressed')
+                    # ardopcf BUSYDET: audio energy detected on the channel.
+                    # Track this with a separate flag; do NOT touch ardop_idle.
+                    # ardopcf only sends NEWSTATE DISC on transitions, so if
+                    # BUSY TRUE fires while already in DISC, clearing ardop_idle
+                    # here would deadlock the bridge with no re-announcement
+                    # to recover from.  The _channel_busy flag is checked at
+                    # the TX settle step as an additional gate.
+                    self._channel_busy = (msg.split()[-1] == 'TRUE')
+                    self.log.info('BUSYDET: %s', 'busy' if self._channel_busy else 'clear')
                 elif msg.startswith('PTT '):
                     ptt_on = msg.split()[-1] == 'TRUE'
                     if self._ptt_serial is not None:
@@ -377,12 +384,14 @@ class ArdopKissBridge:
                     await asyncio.sleep(remaining)
                     continue
 
-                # Final settle: ardopcf may not have reported BUSY yet for a
-                # signal that started right as the holdoffs cleared
+                # Final settle: catches a signal that started just as the
+                # holdoffs cleared, before ardopcf transitions to FECRCV.
+                # Also re-checks BUSYDET (_channel_busy) for energy that
+                # doesn't yet have a NEWSTATE change behind it.
                 await asyncio.sleep(TX_SETTLE_DELAY)
 
-                if self.ardop_idle.is_set():
-                    break   # still DISC — safe to transmit
+                if self.ardop_idle.is_set() and not self._channel_busy:
+                    break   # still DISC and no energy detected — safe to TX
                 # Channel became busy during settling; loop back and wait.
 
             self.log.info('ARDOP TX FEC %d bytes', len(payload))
