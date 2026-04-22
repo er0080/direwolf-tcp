@@ -196,10 +196,15 @@ class ArdopKissBridge:
 
         # Half-duplex flow control timers (monotonic timestamps).
         # _post_rx_holdoff_until: set on FECRCV→DISC (we just finished receiving)
-        # _post_tx_yield_until:   set on PTT FALSE  (we just finished transmitting)
+        # _post_tx_yield_until:   set on TX→DISC    (we just finished transmitting)
         self._post_rx_holdoff_until: float = 0.0
         self._post_tx_yield_until:   float = 0.0
         self._last_ardop_state: str = 'DISC'
+
+        # Set to True when we send FECSEND TRUE; cleared on NEWSTATE DISC.
+        # Used to distinguish our TX→DISC from remote FECRCV→DISC so the
+        # yield timer is set in the right handler.
+        self._transmitting: bool = False
 
         # Reference to the current KISS client writer (one client at a time)
         self._kiss_writer: asyncio.StreamWriter | None = None
@@ -236,8 +241,18 @@ class ArdopKissBridge:
                     state = msg.split()[-1]
                     if state == 'DISC':
                         if self._last_ardop_state == 'FECRCV':
+                            # Remote station just finished transmitting.
                             self._post_rx_holdoff_until = time.monotonic() + POST_RX_HOLDOFF
                             self.log.debug('Post-RX hold-off %.1fs started', POST_RX_HOLDOFF)
+                        elif self._transmitting:
+                            # We just finished transmitting.  Set the yield
+                            # timer HERE, before ardop_idle.set(), so it is
+                            # guaranteed visible the instant the TX loop wakes.
+                            # (PTT FALSE may arrive in a separate TCP read after
+                            # NEWSTATE DISC, making it useless for this purpose.)
+                            self._post_tx_yield_until = time.monotonic() + POST_TX_YIELD
+                            self.log.debug('Post-TX yield %.1fs started', POST_TX_YIELD)
+                        self._transmitting = False
                         self._last_ardop_state = 'DISC'
                         self.ardop_idle.set()
                         self.log.info('ARDOP idle (DISC)')
@@ -261,11 +276,10 @@ class ArdopKissBridge:
                         self.log.info('PTT %s → RTS on %s', 'ON' if ptt_on else 'OFF', self.ptt_port)
                     else:
                         self.log.debug('PTT %s (no --ptt-port configured)', msg.split()[-1])
-                    if not ptt_on:
-                        # Our transmission just ended.  Yield the channel so
-                        # the remote side can respond before we TX again.
-                        self._post_tx_yield_until = time.monotonic() + POST_TX_YIELD
-                        self.log.debug('Post-TX yield %.1fs started', POST_TX_YIELD)
+                    # Note: post-TX yield is set in the NEWSTATE DISC handler,
+                    # not here.  PTT FALSE may arrive in a separate TCP read
+                    # after NEWSTATE DISC, so setting the timer here would be
+                    # a race — the TX loop can wake between the two messages.
 
     async def _ardop_cmd_writer(self, writer: asyncio.StreamWriter, cmd: str) -> None:
         """Send a single command to ardopcf command port."""
@@ -381,7 +395,9 @@ class ArdopKissBridge:
             # Trigger transmission
             await self._ardop_cmd_writer(cmd_writer, 'FECSEND TRUE')
 
-            # Mark as busy (will be cleared when NEWSTATE DISC arrives)
+            # Mark that WE are transmitting so NEWSTATE DISC knows to set
+            # the post-TX yield (not the post-RX holdoff).
+            self._transmitting = True
             self.ardop_idle.clear()
 
     # ── KISS TCP server ───────────────────────────────────────────────────────
