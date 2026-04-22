@@ -19,6 +19,12 @@ See `README.md` for full architecture, setup steps, and tuning notes.
 | `scripts/rf-setup.sh` | RF variant: launches Direwolf for IC-705 (ports 8000/8001) and IC-7300 (ports 8100/8101), creates namespaces, attaches tncattach — no PipeWire involved |
 | `scripts/rf-teardown.sh` | Stops RF Direwolf instances and tncattach, removes namespaces |
 | `scripts/rf-test.sh` | Pre-flight checks for RF link (interfaces, KISS ports, serial devices) then pings both ways |
+| `scripts/ardop-setup.sh` | ARDOP branch: launches ardopcf × 2 + KISS bridges × 2 + namespaces + tncattach |
+| `scripts/ardop-teardown.sh` | Stops all ARDOP processes and cleans up namespaces |
+| `scripts/ardop-test.sh` | Pre-flight checks for ARDOP RF link, pings both ways at 5-second interval |
+| `scripts/ardop_kiss_bridge.py` | Python asyncio bridge: ARDOP FEC datagram ↔ standard KISS TCP (so tncattach works) |
+| `ardopcf/` | ardopcf submodule (git clone of github.com/pflarue/ardop); build with `cd ardopcf && make` |
+| `tests/test_ardop_kiss_bridge.py` | Unit tests for bridge KISS/ARDOP framing helpers (24 tests) |
 | tncattach (`tncattach/tncattach`) | Bridges KISS/TCP → TAP interfaces; built from git submodule |
 | Network namespaces | `ns_a` holds `tnc0` (10.0.0.1), `ns_b` holds `tnc1` (10.0.0.2) |
 
@@ -87,3 +93,8 @@ tail -f logs/dw-b.log                           # direwolf B output
 - **RF ping interval must exceed RTT**: At 2400 baud QPSK with TXDELAY 20 + TXTAIL 10, frame air time is ~860 ms and RTT is ~1700 ms. Using `ping -i 1` (default) causes the transmit queue to grow and produces back-to-back collisions. Always use `ping -i 3` or longer when testing the RF link.
 - **KISS has no flow control**: tncattach can feed frames faster than the radio can transmit. For sustained traffic, rate-limit with `tc tbf`. TCP self-limits via congestion control; ICMP does not.
 - **2400 QPSK requires matched SSB filter bandwidth**: Both radios must have TX bandwidth wide enough (~2.4 kHz) and matched. A narrower filter on the transmitting radio will cause systematic FEC corrections on every received frame even at correct audio levels.
+- **ARDOP does not use standard KISS**: ardopcf speaks a proprietary host protocol (text commands on port N, length-prefixed binary frames on port N+1). `ardop_kiss_bridge.py` bridges this to standard KISS TCP so tncattach works unchanged. The bridge operates ardopcf in FEC (datagram) mode.
+- **ardopcf PTT sets both DTR and RTS**: The `-p /dev/...` option activates both lines, so the IC-705 and IC-7300 PTT wiring (DTR) works with ardopcf's serial PTT option.
+- **ARDOP FEC vs ARQ**: FEC mode = connectionless datagrams (same model as Direwolf, no guaranteed delivery). ARQ mode = connected session with automatic retransmission but requires establishing a connection — not compatible with raw IP datagrams via tncattach. The bridge uses FEC mode.
+- **ardop-test.sh uses --interval 5**: ARDOP frame overhead is higher than Direwolf (leader + FEC blocks); RTT may exceed 3s depending on FECMODE. Default 5-second interval prevents transmit queue stacking.
+- **Run unit tests before field testing**: `python3 -m unittest discover -s tests -p "test_*.py"` validates all KISS/ARDOP framing helpers without hardware.
