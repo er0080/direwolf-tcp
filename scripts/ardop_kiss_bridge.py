@@ -157,9 +157,13 @@ def parse_ardop_data_frames(buf: bytearray) -> list[tuple[bytes, bytes]]:
 #                     time to register a signal that started right as DISC
 #                     was seen (BUSYDET detection lag).
 #
-POST_RX_HOLDOFF = 1.0   # seconds  (was 0.8 — increase for safety margin)
-POST_TX_YIELD   = 2.0   # seconds  (NEW — must be > POST_RX_HOLDOFF + TX_SETTLE_DELAY)
-TX_SETTLE_DELAY = 0.5   # seconds  (was 0.3)
+POST_RX_HOLDOFF = 1.0   # seconds  after receiving: let remote fully return to DISC
+POST_TX_YIELD   = 3.0   # seconds  after transmitting: must exceed
+                        #   POST_RX_HOLDOFF + TX_SETTLE_DELAY + FECRCV detection time
+                        #   (remote starts preamble at ~1.5s; ardopcf reports FECRCV
+                        #    after ~0.5–1.0s of preamble = latest ~2.5s after our TX ends;
+                        #    3.0s ensures ardop_idle is clear before yield expires)
+TX_SETTLE_DELAY = 0.5   # seconds  final check after holdoffs
 
 # ── Bridge ────────────────────────────────────────────────────────────────────
 class ArdopKissBridge:
@@ -205,12 +209,6 @@ class ArdopKissBridge:
         # Used to distinguish our TX→DISC from remote FECRCV→DISC so the
         # yield timer is set in the right handler.
         self._transmitting: bool = False
-
-        # Set True by BUSY TRUE, cleared by BUSY FALSE.
-        # Checked at the TX settle step — does not touch ardop_idle so that
-        # a BUSY TRUE while already in DISC state cannot deadlock the bridge
-        # (ardopcf only sends NEWSTATE DISC on transitions, not re-announcements).
-        self._channel_busy: bool = False
 
         # Reference to the current KISS client writer (one client at a time)
         self._kiss_writer: asyncio.StreamWriter | None = None
@@ -267,15 +265,11 @@ class ArdopKissBridge:
                         self.ardop_idle.clear()
                         self.log.info('ARDOP state: %s', state)
                 elif msg.startswith('BUSY '):
-                    # ardopcf BUSYDET: audio energy detected on the channel.
-                    # Track this with a separate flag; do NOT touch ardop_idle.
-                    # ardopcf only sends NEWSTATE DISC on transitions, so if
-                    # BUSY TRUE fires while already in DISC, clearing ardop_idle
-                    # here would deadlock the bridge with no re-announcement
-                    # to recover from.  The _channel_busy flag is checked at
-                    # the TX settle step as an additional gate.
-                    self._channel_busy = (msg.split()[-1] == 'TRUE')
-                    self.log.info('BUSYDET: %s', 'busy' if self._channel_busy else 'clear')
+                    # ardopcf BUSYDET: audio energy detected.  Logged for
+                    # diagnostics; flow control relies on NEWSTATE FECRCV/DISC
+                    # rather than BUSYDET to avoid deadlocks (ardopcf only
+                    # sends NEWSTATE DISC on transitions, not re-announcements).
+                    self.log.debug('BUSYDET: %s', msg.split()[-1])
                 elif msg.startswith('PTT '):
                     ptt_on = msg.split()[-1] == 'TRUE'
                     if self._ptt_serial is not None:
@@ -390,9 +384,9 @@ class ArdopKissBridge:
                 # doesn't yet have a NEWSTATE change behind it.
                 await asyncio.sleep(TX_SETTLE_DELAY)
 
-                if self.ardop_idle.is_set() and not self._channel_busy:
-                    break   # still DISC and no energy detected — safe to TX
-                # Channel became busy during settling; loop back and wait.
+                if self.ardop_idle.is_set():
+                    break   # still DISC after settle — safe to TX
+                # ardopcf transitioned away from DISC during settle; loop back.
 
             self.log.info('ARDOP TX FEC %d bytes', len(payload))
 
