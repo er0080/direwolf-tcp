@@ -90,12 +90,16 @@ wait_for() {
 
 # ---------------------------------------------------------------------------
 # Step 1: ardopcf for IC-705
+# No PTT flag — ardopcf sends "PTT TRUE"/"PTT FALSE" to the host (bridge).
+# The bridge handles PTT via pyserial RTS on ic_705_b (the IC-705 data port).
+# pyserial sets DTR=True on open, which CDC-ACM USB devices require before
+# responding to RTS changes.  ardopcf's OpenCOMPort uses O_NDELAY and clears
+# DTR, causing the IC-705 to ignore its own RTS assertions.
 # ---------------------------------------------------------------------------
-echo "==> Starting ardopcf IC-705 (cmd 8515, data 8516)..."
+echo "==> Starting ardopcf IC-705 (cmd 8515, data 8516, bridge PTT)..."
 
 sudo -u "$REAL_USER" \
     "$ARDOPCF" \
-    -p /dev/ic_705_b \
     --logdir "$LOG_DIR" \
     8515 \
     plughw:CARD=CODEC_705,DEV=0 \
@@ -109,14 +113,13 @@ echo "  ardopcf IC-705 PID: $ARDOP_705_PID"
 wait_for "IC-705 ardopcf cmd port 8515" "ss -tlnp | grep -q :8515"
 
 # ---------------------------------------------------------------------------
-# Step 2: ardopcf for IC-7300
+# Step 2: ardopcf for IC-7300 — same bridge PTT approach for consistency.
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> Starting ardopcf IC-7300 (cmd 8615, data 8616)..."
+echo "==> Starting ardopcf IC-7300 (cmd 8615, data 8616, bridge PTT)..."
 
 sudo -u "$REAL_USER" \
     "$ARDOPCF" \
-    -p /dev/ic_7300 \
     --logdir "$LOG_DIR" \
     8615 \
     plughw:CARD=CODEC_7300,DEV=0 \
@@ -141,6 +144,7 @@ sudo -u "$REAL_USER" \
     --kiss-port  8511 \
     --callsign   KD2MYS-5 \
     --fecmode    "$FECMODE" \
+    --ptt-port   /dev/ic_705_b \
     > "$LOG_DIR/bridge-705.log" 2>&1 &
 
 BRIDGE_705_PID=$!
@@ -161,6 +165,7 @@ sudo -u "$REAL_USER" \
     --kiss-port  8611 \
     --callsign   KD2MYS-6 \
     --fecmode    "$FECMODE" \
+    --ptt-port   /dev/ic_7300 \
     > "$LOG_DIR/bridge-7300.log" 2>&1 &
 
 BRIDGE_7300_PID=$!

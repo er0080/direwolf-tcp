@@ -19,12 +19,20 @@ KISS protocol (TCP server, one client at a time):
   FEND inside payload → FESC TFEND (0xDB 0xDC)
   FESC inside payload → FESC TFESC (0xDB 0xDD)
 
+PTT:
+  ardopcf is started without any -p/-c PTT flag.  It sends "PTT TRUE" /
+  "PTT FALSE" to the host (this bridge) on the command port.  The bridge
+  handles PTT via pyserial RTS on --ptt-port (pyserial sets DTR=True on open,
+  which is required by CDC-ACM USB devices like the IC-705 before they will
+  respond to RTS changes).
+
 Usage:
   python3 ardop-kiss-bridge.py \\
       --ardop-port 8515 \\
       --kiss-port  8511 \\
       --callsign   KD2MYS-5 \\
-      --fecmode    4PSK.2000.100
+      --fecmode    4PSK.2000.100 \\
+      --ptt-port   /dev/ic_705_b
 """
 
 import argparse
@@ -32,6 +40,13 @@ import asyncio
 import logging
 import struct
 import sys
+import time
+
+try:
+    import serial as _pyserial
+    _HAS_SERIAL = True
+except ImportError:
+    _HAS_SERIAL = False
 
 # ── KISS byte constants ──────────────────────────────────────────────────────
 FEND  = 0xC0   # frame end / delimiter
@@ -121,6 +136,19 @@ def parse_ardop_data_frames(buf: bytearray) -> list[tuple[bytes, bytes]]:
     return frames
 
 
+# ── Half-duplex flow control constants ───────────────────────────────────────
+# After a FECRCV→DISC transition (we just received a frame), hold off before
+# transmitting.  Gives the remote station time to exit FECSEND and return to
+# DISC.  Keep short — the ARDOP leader (~1s preamble) already provides the
+# bulk of the turnaround margin.
+POST_RX_HOLDOFF = 0.8   # seconds
+
+# Settling delay before committing to FECSEND: gives ardopcf time to register
+# an incoming signal via BUSYDET before we start transmitting.  The ARDOP
+# preamble is ~1s, so 0.3s is sufficient to catch a signal that started
+# right as we saw DISC.
+TX_SETTLE_DELAY = 0.3   # seconds
+
 # ── Bridge ────────────────────────────────────────────────────────────────────
 class ArdopKissBridge:
     def __init__(
@@ -131,6 +159,8 @@ class ArdopKissBridge:
         callsign:    str,
         fecmode:     str,
         fecrepeats:  int = 0,
+        ptt_port:    str = None,
+        ptt_baud:    int = 19200,
         log:         logging.Logger = None,
     ):
         self.ardop_host  = ardop_host
@@ -140,6 +170,8 @@ class ArdopKissBridge:
         self.callsign    = callsign.upper()
         self.fecmode     = fecmode
         self.fecrepeats  = fecrepeats
+        self.ptt_port    = ptt_port
+        self.ptt_baud    = ptt_baud
         self.log         = log or logging.getLogger(__name__)
 
         # Queues: kiss_tx = frames to send via ARDOP; ardop_rx = frames received from ARDOP
@@ -150,8 +182,17 @@ class ArdopKissBridge:
         self.ardop_idle = asyncio.Event()
         self.ardop_idle.set()                  # assume idle at start
 
+        # Half-duplex flow control: after receiving a frame (FECRCV→DISC),
+        # hold off TX for POST_RX_HOLDOFF seconds so the remote station has
+        # time to fully return to DISC before we start our own transmission.
+        self._post_rx_holdoff_until: float = 0.0
+        self._last_ardop_state: str = 'DISC'
+
         # Reference to the current KISS client writer (one client at a time)
         self._kiss_writer: asyncio.StreamWriter | None = None
+
+        # pyserial handle for RTS PTT (opened in run() if --ptt-port given)
+        self._ptt_serial = None
 
     # ── ardopcf command socket ────────────────────────────────────────────────
 
@@ -159,7 +200,7 @@ class ArdopKissBridge:
         """
         Continuously read lines from ardopcf command port.
         Update ardop_idle event based on NEWSTATE messages.
-        Forward BUFFER confirmations to unblock the TX coroutine.
+        Handle PTT TRUE/FALSE by asserting/clearing RTS on the PTT serial port.
         """
         buf = b''
         while True:
@@ -181,11 +222,26 @@ class ArdopKissBridge:
                 if msg.startswith('NEWSTATE'):
                     state = msg.split()[-1]
                     if state == 'DISC':
+                        # If we just finished receiving a frame, start the
+                        # post-RX hold-off to prevent immediately colliding
+                        # with the remote station returning to DISC.
+                        if self._last_ardop_state == 'FECRCV':
+                            self._post_rx_holdoff_until = time.monotonic() + POST_RX_HOLDOFF
+                            self.log.debug('Post-RX hold-off %.1fs started', POST_RX_HOLDOFF)
+                        self._last_ardop_state = 'DISC'
                         self.ardop_idle.set()
                         self.log.info('ARDOP idle (DISC)')
                     else:
+                        self._last_ardop_state = state
                         self.ardop_idle.clear()
                         self.log.info('ARDOP state: %s', state)
+                elif msg.startswith('PTT '):
+                    ptt_on = msg.split()[-1] == 'TRUE'
+                    if self._ptt_serial is not None:
+                        self._ptt_serial.rts = ptt_on
+                        self.log.info('PTT %s → RTS on %s', 'ON' if ptt_on else 'OFF', self.ptt_port)
+                    else:
+                        self.log.debug('PTT %s (no --ptt-port configured)', msg.split()[-1])
 
     async def _ardop_cmd_writer(self, writer: asyncio.StreamWriter, cmd: str) -> None:
         """Send a single command to ardopcf command port."""
@@ -258,17 +314,35 @@ class ArdopKissBridge:
         while True:
             payload = await self.kiss_tx_queue.get()
 
-            # Wait for ardopcf to be idle (DISC state)
-            await self.ardop_idle.wait()
+            # Wait until the channel is confirmed clear:
+            #   1. ardopcf must be in DISC state
+            #   2. any post-RX hold-off (after a FECRCV→DISC transition) must expire
+            #   3. re-verify DISC after a settling delay to catch incoming signals
+            #      that BUSYDET hasn't registered yet when DISC was first seen
+            while True:
+                await self.ardop_idle.wait()
+
+                # Enforce post-RX hold-off
+                remaining = self._post_rx_holdoff_until - time.monotonic()
+                if remaining > 0:
+                    self.log.debug('Post-RX hold-off: waiting %.1fs', remaining)
+                    await asyncio.sleep(remaining)
+                    continue  # re-check ardop_idle
+
+                # Settling delay: gives ardopcf time to transition to FECRCV
+                # if an incoming signal is just starting (BUSYDET lag).
+                await asyncio.sleep(TX_SETTLE_DELAY)
+
+                if self.ardop_idle.is_set():
+                    break   # still DISC after settling — safe to transmit
+                # Channel became busy during settling; go back and wait.
 
             self.log.info('ARDOP TX FEC %d bytes', len(payload))
 
-            # Write payload to data port
+            # Write payload to data port then trigger transmission
             data_writer.write(ardop_data_frame(payload))
             await data_writer.drain()
-
-            # Brief pause — ardopcf needs to process the data write before FECSEND
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.10)
 
             # Trigger transmission
             await self._ardop_cmd_writer(cmd_writer, 'FECSEND TRUE')
@@ -334,39 +408,65 @@ class ArdopKissBridge:
     # ── Top-level runner ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        self.log.info(
-            'Connecting to ardopcf at %s:%d / %d',
-            self.ardop_host, self.ardop_port, self.data_port,
-        )
+        # Open PTT serial port before connecting to ardopcf.
+        # pyserial sets DTR=True on open, which is required by CDC-ACM USB
+        # devices (IC-705 ttyACM) before they will respond to RTS changes.
+        if self.ptt_port:
+            if not _HAS_SERIAL:
+                self.log.error('--ptt-port requires pyserial: pip install pyserial')
+                sys.exit(1)
+            try:
+                self._ptt_serial = _pyserial.Serial(self.ptt_port, self.ptt_baud)
+                self._ptt_serial.rts = False   # PTT off at start
+                self.log.info(
+                    'PTT serial port %s opened (DTR=%s, RTS=False)',
+                    self.ptt_port, self._ptt_serial.dtr,
+                )
+            except Exception as e:
+                self.log.error('Cannot open PTT port %s: %s', self.ptt_port, e)
+                sys.exit(1)
+
         try:
-            cmd_reader, cmd_writer = await asyncio.open_connection(
-                self.ardop_host, self.ardop_port
+            self.log.info(
+                'Connecting to ardopcf at %s:%d / %d',
+                self.ardop_host, self.ardop_port, self.data_port,
             )
-            data_reader, data_writer = await asyncio.open_connection(
-                self.ardop_host, self.data_port
-            )
-        except ConnectionRefusedError:
-            self.log.error(
-                'Cannot connect to ardopcf at %s:%d — is it running?',
-                self.ardop_host, self.ardop_port,
-            )
-            sys.exit(1)
+            try:
+                cmd_reader, cmd_writer = await asyncio.open_connection(
+                    self.ardop_host, self.ardop_port
+                )
+                data_reader, data_writer = await asyncio.open_connection(
+                    self.ardop_host, self.data_port
+                )
+            except ConnectionRefusedError:
+                self.log.error(
+                    'Cannot connect to ardopcf at %s:%d — is it running?',
+                    self.ardop_host, self.ardop_port,
+                )
+                sys.exit(1)
 
-        await self._init_ardopc(cmd_reader, cmd_writer)
+            await self._init_ardopc(cmd_reader, cmd_writer)
 
-        self.log.info('Starting KISS TCP server on port %d', self.kiss_port)
-        kiss_server = await asyncio.start_server(
-            self._kiss_client_handler, '0.0.0.0', self.kiss_port
-        )
-
-        async with kiss_server:
-            await asyncio.gather(
-                kiss_server.serve_forever(),
-                self._ardop_cmd_reader(cmd_reader),
-                self._ardop_data_reader(data_reader),
-                self._ardop_tx_loop(data_writer, cmd_writer),
-                self._kiss_tx_handler(),
+            self.log.info('Starting KISS TCP server on port %d', self.kiss_port)
+            kiss_server = await asyncio.start_server(
+                self._kiss_client_handler, '0.0.0.0', self.kiss_port
             )
+
+            async with kiss_server:
+                await asyncio.gather(
+                    kiss_server.serve_forever(),
+                    self._ardop_cmd_reader(cmd_reader),
+                    self._ardop_data_reader(data_reader),
+                    self._ardop_tx_loop(data_writer, cmd_writer),
+                    self._kiss_tx_handler(),
+                )
+        finally:
+            if self._ptt_serial is not None:
+                try:
+                    self._ptt_serial.rts = False
+                    self._ptt_serial.close()
+                except Exception:
+                    pass
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -381,6 +481,8 @@ def main() -> None:
     parser.add_argument('--callsign',    required=True,              help='Station callsign (e.g. KD2MYS-5)')
     parser.add_argument('--fecmode',     default='4PSK.2000.100',    help='ARDOP FEC frame type')
     parser.add_argument('--fecrepeats',  type=int, default=0,        help='FEC repeat count (0=none)')
+    parser.add_argument('--ptt-port',    default=None,               help='Serial port for RTS PTT (e.g. /dev/ic_705_b)')
+    parser.add_argument('--ptt-baud',    type=int, default=19200,    help='Baud rate for PTT serial port')
     parser.add_argument('--log-level',   default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     args = parser.parse_args()
@@ -392,8 +494,9 @@ def main() -> None:
     )
     log = logging.getLogger('ardop-kiss-bridge')
     log.info(
-        'ardop-kiss-bridge starting: ardopcf=%s:%d  KISS port=%d  callsign=%s  fecmode=%s',
+        'ardop-kiss-bridge starting: ardopcf=%s:%d  KISS port=%d  callsign=%s  fecmode=%s  ptt=%s',
         args.ardop_host, args.ardop_port, args.kiss_port, args.callsign, args.fecmode,
+        args.ptt_port or 'none',
     )
 
     bridge = ArdopKissBridge(
@@ -403,6 +506,8 @@ def main() -> None:
         callsign    = args.callsign,
         fecmode     = args.fecmode,
         fecrepeats  = args.fecrepeats,
+        ptt_port    = args.ptt_port,
+        ptt_baud    = args.ptt_baud,
         log         = log,
     )
 

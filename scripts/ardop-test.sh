@@ -3,15 +3,16 @@
 #
 # Usage: sudo ./scripts/ardop-test.sh [--count N] [--interval S]
 #   --count N     number of ping packets each direction (default: 5)
-#   --interval S  ping interval in seconds (default: 5)
+#   --interval S  ping interval in seconds (default: 12)
 #
-# NOTE: ARDOP frame overhead means RTT is higher than with Direwolf.
-# Use --interval >= 5 to avoid transmit queue stacking.
+# NOTE: 4PSK.2000.100 frame time is ~4.5s each direction → RTT ~9s.
+# Use --interval >= 12 to prevent TX queue stacking and collisions.
+# The bridge adds a 3s post-RX hold-off after receiving each frame.
 
 set -euo pipefail
 
 COUNT=5
-INTERVAL=5
+INTERVAL=12
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,8 +57,8 @@ run_test "IC-7300 KISS port 8611 (bridge output)" bash -c "ss -tlnp | grep -q :8
 
 echo ""
 echo "==> Serial / PTT device check"
-run_test "/dev/ic_705_b present"  test -e /dev/ic_705_b
-run_test "/dev/ic_7300 present"   test -e /dev/ic_7300
+run_test "/dev/ic_705_b present (bridge PTT)" test -e /dev/ic_705_b
+run_test "/dev/ic_7300 present"              test -e /dev/ic_7300
 
 echo ""
 echo "==> Ping A→B  (ns_a 10.0.0.1 → 10.0.0.2, ${COUNT} packets, interval ${INTERVAL}s)"
