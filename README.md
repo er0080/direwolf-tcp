@@ -284,3 +284,26 @@ At 2400 baud QPSK with PERSIST 255 / SLOTTIME 1 / asymmetric DWAIT:
 - [tncattach](https://github.com/markqvist/tncattach) — Mark Qvist
 - [PipeWire](https://pipewire.org/) / PulseAudio compatibility layer
 - [Direwolf User Guide](https://github.com/wb2osz/direwolf/tree/master/doc)
+
+## Attribution — `src/ardopc/`
+
+The `src/ardopc/ardop2ofdm/` directory contains a modified copy of the
+**ARDOPC** TNC source code by John Wiseman and contributors, originally
+distributed as a git submodule from
+<https://github.com/DigitalHERMES/ardopc> (Rhizomatica fork). As of the
+Phase 6 flatten (branch `ARDOP-tcpip`), the submodule has been replaced
+with an in-tree copy so project-specific modifications can be tracked
+directly.
+
+Our modifications to the upstream sources include:
+- `ardop2ofdm/ARDOPC.c`, `ardop2ofdm/ARQ.c`: TUN-aware event loop
+  ordering (pre-poll TUN so `bytDataToSendLength` is fresh before a
+  received frame is processed).
+- `ardop2ofdm/ALSASound.c`, `ardop2ofdm/HostInterface.c`: guard the
+  upstream entry point with `#ifndef ARDOP_IP`; hook
+  `AddTagToDataAndSendToHost` to our `TUNDeliverToHost`.
+
+Upstream license and copyright notices inside `src/ardopc/` are
+preserved. Users wishing to track upstream ARDOPC separately can do so
+by cloning <https://github.com/DigitalHERMES/ardopc> directly; this repo
+is a derived work.

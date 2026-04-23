@@ -168,6 +168,11 @@ int   CheckValidCallsignSyntax(char *s) { (void)s; return 1; }
 void  displayState(const char *s)   { (void)s; }
 void  displayCall(int d, char *c)   { (void)d;(void)c; }
 
+/* TUN bridge (Phase 5 fix): ARQ.c's IDLE handler refreshes bytDataToSendLength
+ * via TUNHostPoll() before deciding BREAK vs ACK.  Tests don't exercise that
+ * path, so a no-op stub is enough. */
+void  TUNHostPoll(void)             {}
+
 char *strlop(char *buf, char delim)
 {
     /* Strip everything from delim onward; return pointer past delim or NULL */
