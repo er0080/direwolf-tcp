@@ -158,3 +158,23 @@ immediately so the bug can be investigated. Never re-run with retry loops.
   causes the RX to drop the frame and fall through to the sender's
   frame-repeat path.  On-air bit-error robustness is validated by the
   Phase 6.5 RF test suite.
+- **Phase 6.4 — 3.0 kHz OFDM mode (`--bw 3000`)**: bumps `MAXCAR` from
+  43 to 54 and adds a new wide OFDM mode with 54 carriers at the same
+  55.56 Hz spacing, nominal occupied bandwidth ~2944 Hz.  The Phase 6
+  plan asked for "3.6 kHz / 65 carriers"; at the fixed 12 kHz sample
+  rate and 55.56 Hz carrier spacing, 65 carriers would require a
+  ~3.6 kHz audio passband (carriers from −278 Hz to +3278 Hz), which is
+  not physically realizable.  The achievable ceiling with carriers
+  above DC is ~54, giving ~2944 Hz occupied.  `--bw 3600` is accepted
+  as a marketing alias for `--bw 3000` — both select `XB3000` /
+  `DOFDM_3000_55_E/O` (frame-type codes 0x36/0x37).  **Filter caveat**:
+  IC-705 and IC-7300 max out their SSB TX filter around 3.0 kHz; edge
+  carriers of this mode will be attenuated or clipped and may drop on
+  marginal paths.  Use a radio with a 3 kHz+ TX filter for clean
+  operation.  Default bandwidth remains 2500 Hz.  The template table
+  `intOFDMTemplate[MAXCAR][8][216]` is no longer `CONST` and is
+  regenerated at startup by `InitExtendedOFDMTemplates()` in
+  `CalcTemplates.c` so the centered 43-carrier subset keeps its
+  legacy on-air frequencies (333..2667 Hz) and the existing 200/500/
+  2500 Hz modes remain wire-compatible.  Unit coverage:
+  `tests/test_bw3000`.

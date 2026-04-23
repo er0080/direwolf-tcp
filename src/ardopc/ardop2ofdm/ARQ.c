@@ -81,7 +81,9 @@ int AuxCallsLength = 0;
 int intBW;			// Requested connect speed
 int intSessionBW;	// Negotiated speed
 
-const char ARQBandwidths[9][12] = {"200", "500", "2500", "UNDEFINED"};
+/* Phase 6.4: added "3000" between 2500 and UNDEFINED.  Must stay aligned
+ * with enum _ARQBandwidth order: XB200=0, XB500=1, XB2500=2, XB3000=3. */
+const char ARQBandwidths[9][12] = {"200", "500", "2500", "3000", "UNDEFINED"};
 enum _ARQSubStates ARQState;
 
 const char ARQSubStates[10][11] = {"None", "ISSConReq", "ISSConAck", "ISSData", "ISSId", "IRSConAck", "IRSData", "IRSBreak", "IRSfromISS", "DISCArqEnd"};

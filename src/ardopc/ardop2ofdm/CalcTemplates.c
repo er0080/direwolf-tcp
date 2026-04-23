@@ -3,7 +3,7 @@
 // used to generate modulation samples.
 
 // Rick's code gererates them dynamically as program start, but
-// that measns they have to be in RAM. By pregenerating and 
+// that measns they have to be in RAM. By pregenerating and
 // compliling them they can be placed in program space
 // This is necessary with the small RAM space of embedded CPUs
 
@@ -16,7 +16,71 @@
 #pragma warning(disable : 4244)		// Code does lots of int float to int
 
 
-static int intAmp = 26000;	   // Selected to have some margin in calculations with 16 bit values (< 32767) this must apply to all filters as well. 
+static int intAmp = 26000;	   // Selected to have some margin in calculations with 16 bit values (< 32767) this must apply to all filters as well.
+
+/*
+ * Phase 6.4: runtime regeneration of intOFDMTemplate[MAXCAR][8][216].
+ *
+ * The original ardopc source pre-compiles a 43-row template table into
+ * ardopSampleArrays.c with carrier frequencies 1500 + 55.5556*(i-21) Hz
+ * for i=0..42.  To support the new 3.0 kHz / 54-carrier OFDM mode, we
+ * expand MAXCAR from 43 to 54 and regenerate ALL 54 rows at startup so
+ * that the centered 43-carrier subset (indices 5..47 when MAXCAR=54)
+ * maps to the SAME frequencies (333..2667 Hz) as before — preserving
+ * on-air compatibility with Phase 6.1/6.2/6.3 peers for the 200/500/
+ * 2500 Hz modes.
+ *
+ * Frequency formula:  dblCarFreq[i] = 1500 + spacing * (i - (MAXCAR-1)/2)
+ *   spacing = 10000 / 180 = 55.5556 Hz
+ *   MAXCAR = 43:  offset = 21   (unchanged)
+ *   MAXCAR = 54:  offset = 26   → i=5 maps to 333 Hz, i=47 to 2667 Hz
+ *
+ * For MAXCAR=54 the lowest carrier sits at 1500 - 26*55.56 = 56 Hz
+ * which is below any physical SSB passband and will be filter-clipped
+ * on the TX radio; the highest lands at 1500 + 27*55.56 = 3000 Hz.
+ * In practice the usable center window is ~300–2800 Hz, enough for
+ * ~45–50 carriers.  Edge carriers on the 3.0 kHz mode will be
+ * attenuated on IC-705 / IC-7300 class radios (max SSB filter ~3 kHz);
+ * this is documented in config/ardop-ip-rf.conf and CLAUDE.md.
+ *
+ * Idempotent: safe to call more than once.  Overwrites any prior contents.
+ */
+void InitExtendedOFDMTemplates(void)
+{
+    static int already_done = 0;
+    if (already_done) return;
+
+    const float spacing = 10000.0f / 180.0f;  /* 55.5556 Hz */
+    const int   offset  = (MAXCAR - 1) / 2;
+
+    float dblCarFreq[MAXCAR];
+    float dblCarPhaseInc[MAXCAR];
+    int i, j, k;
+
+    for (i = 0; i < MAXCAR; i++)
+        dblCarFreq[i] = 1500.0f + spacing * (float)(i - offset);
+
+    for (i = 0; i < MAXCAR; i++)
+        dblCarPhaseInc[i] = 2.0f * M_PI * dblCarFreq[i] / 12000.0f;
+
+    for (i = 0; i < MAXCAR; i++)
+    {
+        for (j = 0; j < 8; j++)
+        {
+            float dblAngle = (float)j * M_PI / 8.0f;
+            for (k = 0; k < 216; k++)
+            {
+                int x = (int)((float)intAmp * sinf(dblAngle));
+                intOFDMTemplate[i][j][k] = (short)x;
+                dblAngle += dblCarPhaseInc[i];
+                if (dblAngle >= 2.0f * M_PI)
+                    dblAngle -= 2.0f * M_PI;
+            }
+        }
+    }
+
+    already_done = 1;
+}
 
 #if 0
 void Generate50BaudTwoToneLeaderTemplate()

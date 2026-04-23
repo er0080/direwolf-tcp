@@ -36,6 +36,7 @@ extern int                   MaxFrameCarriers;
 
 void ardopmain(void);
 void tun_ardopc_init(int tun_fd, const char *fec_mode);
+void InitExtendedOFDMTemplates(void);  /* Phase 6.4 */
 
 /* ── CI-V PTT frame builder ──────────────────────────────────────────────── */
 
@@ -64,13 +65,21 @@ static void build_civ_ptt(uint8_t addr)
 static int bw_index(const char *s)
 {
     int hz = atoi(s);
-    /* enum _ARQBandwidth: XB200=0, XB500=1, XB2500=2 */
+    /* enum _ARQBandwidth: XB200=0, XB500=1, XB2500=2, XB3000=3 (Phase 6.4) */
     switch (hz) {
     case 200:  return 0;
     case 500:  return 1;
     case 2500: return 2;
+    /* Phase 6.4: 3.0 kHz OFDM, 54 carriers.  "3600" is accepted as an
+     * alias because the phase plan marketed a 3.6 kHz option; the actual
+     * occupied bandwidth is ~2944 Hz (54 × 55.56 Hz) — the wider figure
+     * is not physically realisable inside a 12 kHz sample rate / ~3 kHz
+     * SSB passband.  Both inputs map to XB3000. */
+    case 3000:
+    case 3600: return 3;
     default:
-        fprintf(stderr, "ardop-ip: unknown bandwidth %d Hz (use 200/500/2500); using 2500\n", hz);
+        fprintf(stderr, "ardop-ip: unknown bandwidth %d Hz "
+                        "(use 200/500/2500/3000); using 2500\n", hz);
         return 2;
     }
 }
@@ -117,8 +126,13 @@ static void usage(const char *prog)
         "  --mtu      N      MTU in bytes (default: 1460)\n"
         "\n"
         "FEC mode:\n"
-        "  --bw   BW         Bandwidth Hz: 200|500|2500 (default: 2500)\n"
+        "  --bw   BW         Bandwidth Hz: 200|500|2500|3000 (default: 2500)\n"
         "                    Selects the OFDM FEC mode (OFDM.{BW}.55).\n"
+        "                    3000 is the Phase 6.4 wide mode (54 carriers,\n"
+        "                    2944 Hz occupied).  Requires TX SSB filter\n"
+        "                    >= 2.8 kHz on both radios; IC-705 / IC-7300\n"
+        "                    max ~3.0 kHz — edge carriers will be attenuated.\n"
+        "                    '3600' is accepted as an alias (same mode).\n"
         "  --fec-strength S  RS parity per OFDM block: light|normal|strong\n"
         "                    (NPAR = 10 | 20 | 40, default: normal).\n"
         "                    Both peers MUST use the same value — NPAR is\n"
@@ -159,7 +173,7 @@ int main(int argc, char *argv[])
     int         bw       = 2;   /* XB2500 — 2500 Hz */
     int         fec_npar = 20;  /* normal */
     int         min_car  = 1;   /* Phase 6.2 default: 1 carrier minimum */
-    int         max_car  = 43;  /* Phase 6.2 default: MAXCAR ceiling */
+    int         max_car  = MAXCAR; /* Phase 6.2/6.4: default ceiling is MAXCAR (54) */
     int         force_mode = -1; /* Phase 6.3a: disabled by default */
 
     static struct option long_opts[] = {
@@ -247,11 +261,14 @@ int main(int argc, char *argv[])
     UseKISS      = FALSE;
     FECStrengthNPAR = fec_npar;
 
-    /* Phase 6.2: clamp and apply min/max carrier knobs */
+    /* Phase 6.2: clamp and apply min/max carrier knobs.
+     * Phase 6.4: upper clamp is now MAXCAR (54) — but only the XB3000 mode
+     * actually uses the extra slots.  The 2500 Hz mode's natural ceiling
+     * is still 43 carriers, enforced by FrameInfo()/intNumCar. */
     if (min_car < 1)  min_car = 1;
-    if (min_car > 43) min_car = 43;
+    if (min_car > MAXCAR) min_car = MAXCAR;
     if (max_car < min_car) max_car = min_car;
-    if (max_car > 43) max_car = 43;
+    if (max_car > MAXCAR) max_car = MAXCAR;
     MinFrameCarriers = min_car;
     MaxFrameCarriers = max_car;
 
@@ -263,9 +280,16 @@ int main(int argc, char *argv[])
     switch (bw) {
     case 0:  fec_mode = "OFDM.200.55";  break;
     case 1:  fec_mode = "OFDM.500.55";  break;
+    case 3:  fec_mode = "OFDM.3000.55"; break;  /* Phase 6.4 */
     case 2:
     default: fec_mode = "OFDM.2500.55"; break;
     }
+
+    /* Phase 6.4: regenerate intOFDMTemplate[MAXCAR][8][216] now that
+     * MAXCAR = 54.  The ardopSampleArrays.c initializer only populates
+     * the first 43 rows; this fills in rows 43..53 and also overwrites
+     * rows 0..42 with the identical math for consistency. */
+    InitExtendedOFDMTemplates();
 
     /* ── CI-V PTT setup ─────────────────────────────────────────────────── */
 

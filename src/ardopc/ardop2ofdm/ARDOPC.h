@@ -57,7 +57,16 @@ extern const char ProductVersion[];
 #define ReceiveSize 240	// try 100 mS for now
 #define NumberofinBuffers 4
 
-#define MAXCAR 43			// Max OFDM Carriers
+/* Phase 6.4: MAXCAR grown from 43 to 54 to accommodate the new 3.0 kHz
+ * OFDM mode (see DOFDM_3000_55_E/O below).  Existing 200/500/2500 Hz modes
+ * keep their on-air behaviour: the TX modulator centers the data carriers
+ * inside the 54-slot array via intCarStartIndex = (MAXCAR - intNumCar)/2,
+ * and the template waveform table is regenerated at startup by
+ * InitExtendedOFDMTemplates() with carrier-frequency offset (MAXCAR-1)/2
+ * so indices 5..47 (the 43-carrier centered subset) map to the same
+ * frequencies (333..2667 Hz) as before the bump.
+ */
+#define MAXCAR 54			// Max OFDM Carriers (Phase 6.4: was 43)
 
 #define DATABUFFERSIZE 11000
 
@@ -247,6 +256,13 @@ VOID WriteDebugLog(int LogLevel, const char * format, ...);
 void ardopmain();
 BOOL GetNextFECFrame();
 void GenerateFSKTemplates();
+/* Phase 6.4: regenerates intOFDMTemplate[MAXCAR][8][216] using
+ * spacing = 10000/180 Hz and offset (MAXCAR-1)/2 so that the centered
+ * 43-carrier subset (indices 5..47 when MAXCAR=54) matches the original
+ * on-air frequencies (333..2667 Hz) of the 2500 Hz OFDM mode.  Called
+ * from main.c / ardopmain() before any transmission.  Safe to call
+ * multiple times (idempotent). */
+void InitExtendedOFDMTemplates(void);
 void printtick(char * msg);
 void InitValidFrameTypes();
 //#endif
@@ -331,6 +347,9 @@ enum _ARQBandwidth
 	XB200,
 	XB500,
 	XB2500,
+	XB3000,		/* Phase 6.4: 3.0 kHz OFDM mode, 54 carriers, same 55.56 Hz
+				 * spacing. Not a standard ARDOP bandwidth — ardop-ip only.
+				 * Requires SSB TX filter >= 2.8 kHz on both radios. */
 	UNDEFINED
 };
 
@@ -483,6 +502,12 @@ extern struct SEM Semaphore;
 #define DOFDM_2500_55_E	0x34
 #define DOFDM_2500_55_O	0x35
 
+	// Phase 6.4: 3.0 kHz bandwidth OFDM, 54 carriers (uses MAXCAR slots)
+	// Nominal occupied bandwidth ~2944 Hz (54 carriers × 55.5556 Hz).
+	// Requires TX SSB filter >= 2.8 kHz; IC-705 / IC-7300 max ~3.0 kHz.
+#define DOFDM_3000_55_E	0x36
+#define DOFDM_3000_55_O	0x37
+
 #define PktFrameHeader 0x3A		// Variable length frame Header
 #define PktFrameData 0x3B		// Variable length frame Data (Virtual Frsme Type)
 
@@ -501,7 +526,10 @@ extern CONST short intQAM50bdCarTemplate[11][4][120];
 extern CONST short intFSK50bdCarTemplate[12][240];		// Template for 4FSK carriers spaced at 50 Hz, 50 baud
 extern CONST short intFSK100bdCarTemplate[4][120];
 
-extern CONST short intOFDMTemplate[MAXCAR][8][216];
+/* Phase 6.4: no longer CONST.  Regenerated at startup by
+ * InitExtendedOFDMTemplates() to cover all MAXCAR (now 54) carriers
+ * including the 11 new slots beyond the original 43-row initializer. */
+extern short intOFDMTemplate[MAXCAR][8][216];
 
 // Config Params
 extern char GridSquare[9];
