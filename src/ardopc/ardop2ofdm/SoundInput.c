@@ -3789,7 +3789,6 @@ void DemodulateFrame(int intFrameType)
 		case DOFDM_200_55_E:
 		case DOFDM_500_55_E:
 		case DOFDM_2500_55_E:
-		case DOFDM_3000_55_E:	/* Phase 6.4 */
 
 			DemodOFDM();
 			break;
@@ -4064,7 +4063,6 @@ BOOL DecodeFrame(int xxx, UCHAR * bytData)
 		case DOFDM_200_55_E:
 		case DOFDM_500_55_E:
 		case DOFDM_2500_55_E:
-		case DOFDM_3000_55_E:	/* Phase 6.4 */
 
 			// already decoded and checked
 

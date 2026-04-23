@@ -68,7 +68,7 @@ src/%.o: src/%.c
 
 -include $(OBJS:.o=.d)
 
-TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq tests/test_tun_fec tests/test_varsize tests/test_qam tests/test_bw3000
+TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq tests/test_tun_fec tests/test_varsize tests/test_qam
 
 clean:
 	rm -f ardop-ip $(TEST_BINS) $(OBJS) $(OBJS:.o=.d) tests/*.o tests/*.d
@@ -155,14 +155,4 @@ test_qam: tests/test_qam
 tests/test_qam: tests/test_qam.c $(ARDOPC)/qam32_tables.o $(UNITY_OBJS)
 	$(CC) $(CFLAGS) $^ -lm -o $@
 
-# ── Phase 6.4: 3.0 kHz / 54-carrier OFDM unit tests ──────────────────────
-test_bw3000: tests/test_bw3000
-	tests/test_bw3000
-
-# Standalone — reproduces FrameInfo() and template math in the test itself
-# so we don't need to link ARDOPC.o (which drags in audio / host-interface
-# deps).  Static asserts pin MAXCAR and the new frame-type slots.
-tests/test_bw3000: tests/test_bw3000.c $(UNITY_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@
-
-test: test_tun test_civ test_fec test_arq test_tun_fec test_varsize test_qam test_bw3000
+test: test_tun test_civ test_fec test_arq test_tun_fec test_varsize test_qam

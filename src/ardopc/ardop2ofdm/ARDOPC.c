@@ -281,8 +281,6 @@ const UCHAR bytValidFrameTypesALL[]=
 	D16QAM_2500_100_O,
 	DOFDM_2500_55_E,
 	DOFDM_2500_55_O,
-	DOFDM_3000_55_E,	// Phase 6.4
-	DOFDM_3000_55_O,	// Phase 6.4
 
 	PktFrameHeader,	// Variable length frame Header
 	PktFrameData,	// Variable length frame Data (Virtual Frsme Type)
@@ -328,29 +326,27 @@ int intLastRcvdFrameQuality;
 
 int intAmp = 26000;	   // Selected to have some margin in calculations with 16 bit values (< 32767) this must apply to all filters as well. 
 
-const char strAllDataModes[19][16] =
+const char strAllDataModes[18][16] =
 		{"4PSK.200.50", "4PSK.200.100",
-		"16QAM.200.100", "4FSK.500.50",
+		"16QAM.200.100", "4FSK.500.50", 
 		"4PSK.500.50", "4PSK.500.100",
-		"OFDM.200.55", "OFDM.500.55",
+		"OFDM.200.55", "OFDM.500.55", 
 		"16QAMR.500.100", "16QAM.500.100",
-		"4FSK.1000.50",
-		"4PSKR.2500.50", "4PSK.2500.50",
-		"4PSK.2500.100",
-		"16QAMR.2500.100", "16QAM.2500.100", "OFDM.2500.55",
-		"OFDM.3000.55"};  /* Phase 6.4 */
+		"4FSK.1000.50", 
+		"4PSKR.2500.50", "4PSK.2500.50", 
+		"4PSK.2500.100", 
+		"16QAMR.2500.100", "16QAM.2500.100", "OFDM.2500.55"};
 
-int strAllDataModesLen = 19;
+int strAllDataModesLen = 18;
 
 // Frame Speed By Type (from Rick's spreadsheet) Bytes per minute
 
-const short Rate[64] =
+const short Rate[64] = 
 {
 	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,	// 00 - 0F
 	402,402,826,826,1674,1674,0,0,0,0,402,402,857,857,1674,1674,	// 10 - 1F
 	1674,1674,3349,3359,0,0,0,0,857,857,2143,2143,4286,4286,8372,8372,	// 20 - 2F
-	/* 0x36/0x37: Phase 6.4 OFDM.3000.55 — scaled from 0x34/0x35 by 54/43 */
-	8372,8372,16744,16744,10514,10514,21028,21028,0,0,0,0,0,0,0,0,	// 30 - 3F
+	8372,8372,16744,16744,0,0,0,0,0,0,0,0,0,0,0,0,	// 30 - 3F
 };
 
 const short FrameSize[64] =
@@ -358,8 +354,7 @@ const short FrameSize[64] =
 	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,	// 00 - 0F
 	32,32,64,64,120,120,0,0,0,0,32,32,64,64,128,128,	// 10 - 1F
 	120,120,240,240,360,360,720,720,64,64,160,160,320,320,640,640,	// 20 - 2F
-	/* 0x36/0x37: Phase 6.4 OFDM.3000.55 — 54 carriers × 40 bytes = 2160 */
-	600,600,1200,1200,680,680,1360,1360,854,854,1708,1708,0,0,0,0,	// 30 - 3F
+	600,600,1200,1200,680,680,1360,1360,0,0,0,0,0,0,0,0,	// 30 - 3F
 };
 
 
@@ -442,10 +437,10 @@ const char strFrameType[64][18] =
 	"16QAM.2500.100.O",
 	"OFDM.2500.55.E",
 	"OFDM.2500.55.O",
-	"OFDM.3000.55.E",	// 0x36 — Phase 6.4 wide OFDM (54 carriers)
-	"OFDM.3000.55.O",	// 0x37
+	"",
+	"",
 	"", "", // 0x38 to 0x39
-	"PktFrameHeader",	//3A
+	"PktFrameHeader",	//3A	
 	"PktFrameData",
 	"",					// 0x3C 
 	"OFDMACK",
@@ -534,10 +529,10 @@ const char shortFrameType[64][12] =
 	"Q.2500.100",
 	"OFDM.2500",
 	"OFDM.2500",
-	"OFDM.3000",	// 0x36 — Phase 6.4
-	"OFDM.3000",	// 0x37
+	"",
+	"",
 	"", "", // 0x38 to 0x39
-	"PktHeader",	//3A
+	"PktHeader",	//3A	
 	"PktData",
 	"",		// 0x3C
 	"OFDMACK",
@@ -1062,22 +1057,6 @@ BOOL FrameInfo(UCHAR bytFrameType, int * blnOdd, int * intNumCar, char * strMod,
 
 			*blnOdd = (1 & bytFrameType) != 0;
 			*intNumCar = 43;
-			*intDataLen = 40;
-			*intRSLen = 10;
-			strcpy(strMod, "OFDM");
-			*intBaud = 55;
-			break;
-
-		/* Phase 6.4: 3.0 kHz OFDM — 54 carriers, same 55 baud symbol
-		 * rate, same per-carrier data size as the 2500 Hz mode.  Adds
-		 * 11 carriers on top of the 43 used by OFDM.2500.55 for a
-		 * ~25% throughput bump on radios with a TX SSB filter
-		 * >= 2.8 kHz.  The name "3000" refers to the nominal 3 kHz
-		 * slot; actual occupied bandwidth is ~2944 Hz. */
-		case DOFDM_3000_55_E:
-
-			*blnOdd = (1 & bytFrameType) != 0;
-			*intNumCar = 54;		/* MAXCAR — full array width */
 			*intDataLen = 40;
 			*intRSLen = 10;
 			strcpy(strMod, "OFDM");

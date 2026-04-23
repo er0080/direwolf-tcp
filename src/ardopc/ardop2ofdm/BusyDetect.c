@@ -243,11 +243,7 @@ BOOL BusyDetect3(float * dblMag, int intStart, int intStop)        // this only 
 		break;
 
 	case XB2500:
-	case XB3000: /* Phase 6.4: reuse 2500 Hz busy-detect thresholds */
-		blnBusy = (dblAvgStoNNarrow > (3 + 0.008 * powf(BusyDet, 4))) || (dblAvgStoNWide > (5 + 0.016 * powf(BusyDet, 4)));
-		break;
-	default:
-		break;
+		blnBusy = (dblAvgStoNNarrow > (3 + 0.008 * powf(BusyDet, 4))) || (dblAvgStoNWide > (5 + 0.016 * powf(BusyDet, 4)));  		
  	}
 
 	if (BusyDet == 0)

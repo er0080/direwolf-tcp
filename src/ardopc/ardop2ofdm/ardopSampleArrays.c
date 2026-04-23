@@ -1019,11 +1019,7 @@ CONST short intQAM50bdCarTemplate[11][4][120] =
 	}};
 
 
-/* Phase 6.4: non-CONST because InitExtendedOFDMTemplates() regenerates
- * the entire array at startup.  The initializer below only populates the
- * original 43 rows (indices 0..42); indices 43..53 are zero-initialized
- * by C semantics and filled in by the startup regenerator. */
-short intOFDMTemplate[MAXCAR][8][216] =
+CONST short intOFDMTemplate[MAXCAR][8][216] = 
 {{{
 
 // Carrier 0 Phase 0
