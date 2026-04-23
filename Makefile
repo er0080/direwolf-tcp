@@ -9,7 +9,7 @@
 CC      = gcc
 
 # Flags for our new source files (strict)
-CFLAGS  = -DLINBPQ -g -Wall -I src -I src/ardopc/ardop2ofdm
+CFLAGS  = -DLINBPQ -g -Wall -I src -I src/ardopc/ardop2ofdm -I tests
 
 # Flags for upstream ardopc submodule — warnings suppressed (not our code)
 ARDOPC_CFLAGS = -DLINBPQ -g -w -I src -I src/ardopc/ardop2ofdm
@@ -65,42 +65,22 @@ src/%.o: src/%.c
 
 -include $(OBJS:.o=.d)
 
+TEST_BINS = tests/test_tun
+
 clean:
-	rm -f ardop-ip $(OBJS) $(OBJS:.o=.d)
+	rm -f ardop-ip $(TEST_BINS) $(OBJS) $(OBJS:.o=.d) tests/*.o tests/*.d
 
-# ── Test targets (Phase 2+) ───────────────────────────────────────────────
-test: tests/test_tun tests/test_civ tests/test_fec tests/test_arq
-	@echo "Running unit tests..."
-	@sudo tests/test_tun    && echo "  test_tun:  PASS"
-	@       tests/test_civ  && echo "  test_civ:  PASS"
-	@       tests/test_fec  && echo "  test_fec:  PASS"
-	@       tests/test_arq  && echo "  test_arq:  PASS"
+# ── Phase 2: TUN unit tests ───────────────────────────────────────────────
+test_tun: tests/test_tun
+	sudo tests/test_tun
 
-tests/test_tun: tests/test_tun.c src/tun_interface.o
+UNITY_OBJS = tests/unity.o
+
+tests/unity.o: tests/unity.c tests/unity.h tests/unity_internals.h
+	$(CC) $(CFLAGS) -MMD -c $< -o $@
+
+tests/test_tun: tests/test_tun.c src/tun_interface.o $(UNITY_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
 
-tests/test_civ: tests/test_civ.c src/civ_control.o $(ARDOPC)/LinSerial.o
-	$(CC) $(CFLAGS) $^ -o $@
-
-tests/test_fec: tests/test_fec.c \
-	$(ARDOPC)/FEC.o $(ARDOPC)/rs.o $(ARDOPC)/berlekamp.o $(ARDOPC)/galois.o \
-	$(ARDOPC)/ARDOPC.o $(ARDOPC)/ALSASound.o $(ARDOPC)/ardopSampleArrays.o \
-	$(ARDOPC)/Modulate.o $(ARDOPC)/CalcTemplates.o $(ARDOPC)/FFT.o \
-	$(ARDOPC)/ofdm.o $(ARDOPC)/SoundInput.o $(ARDOPC)/ARQ.o \
-	$(ARDOPC)/BusyDetect.o $(ARDOPC)/LinSerial.o \
-	$(ARDOPC)/HostInterface.o $(ARDOPC)/KISSModule.o \
-	$(ARDOPC)/TCPHostInterface.o \
-	src/stubs.o src/tun_interface.o src/civ_control.o
-	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
-
-tests/test_arq: tests/test_arq.c \
-	$(ARDOPC)/ARQ.o $(ARDOPC)/FEC.o $(ARDOPC)/rs.o \
-	$(ARDOPC)/berlekamp.o $(ARDOPC)/galois.o \
-	$(ARDOPC)/ARDOPC.o $(ARDOPC)/ALSASound.o $(ARDOPC)/ardopSampleArrays.o \
-	$(ARDOPC)/Modulate.o $(ARDOPC)/CalcTemplates.o $(ARDOPC)/FFT.o \
-	$(ARDOPC)/ofdm.o $(ARDOPC)/SoundInput.o \
-	$(ARDOPC)/BusyDetect.o $(ARDOPC)/LinSerial.o \
-	$(ARDOPC)/HostInterface.o $(ARDOPC)/KISSModule.o \
-	$(ARDOPC)/TCPHostInterface.o \
-	src/stubs.o src/tun_interface.o src/civ_control.o
-	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
+# ── Phase 3+: placeholder targets added as tests are written ─────────────
+test: test_tun

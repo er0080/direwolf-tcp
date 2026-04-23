@@ -1,9 +1,5 @@
 /*
  * tun_interface.c — Linux TUN device management for ardop-ip
- *
- * Phase 1: skeleton implementation — symbols are defined so the build
- * links cleanly.  Full implementation is added in Phase 2 when the TUN
- * fd is wired into the ARDOPC.c event loop.
  */
 
 #include <errno.h>
@@ -18,6 +14,9 @@
 #include <sys/ioctl.h>
 
 #include "tun_interface.h"
+
+/* MTU set by tun_configure(); used by tun_write() to enforce the limit. */
+static int tun_mtu = 0;
 
 int tun_open(const char *ifname)
 {
@@ -41,6 +40,7 @@ int tun_open(const char *ifname)
         return -1;
     }
 
+    tun_mtu = 0;    /* reset until tun_configure() is called */
     return fd;
 }
 
@@ -49,6 +49,14 @@ void tun_configure(int fd, const char *ifname,
 {
     char cmd[256];
     (void)fd;   /* ip(8) uses the interface name, not the fd */
+
+    tun_mtu = mtu;
+
+    /* Disable IPv6 before bringing up — prevents NDP/RA packets from
+     * flooding the radio link (and simplifies unit testing). */
+    snprintf(cmd, sizeof(cmd),
+             "sysctl -qw net.ipv6.conf.%s.disable_ipv6=1", ifname);
+    system(cmd);
 
     snprintf(cmd, sizeof(cmd),
              "ip link set %s up mtu %d", ifname, mtu);
@@ -74,6 +82,9 @@ int tun_read(int fd, uint8_t *buf, int maxlen)
 
 void tun_write(int fd, const uint8_t *pkt, int len)
 {
+    if (tun_mtu > 0 && len > tun_mtu)
+        return;     /* silently drop oversized packets */
+
     ssize_t n = write(fd, pkt, len);
     if (n < 0)
         perror("tun_write");
