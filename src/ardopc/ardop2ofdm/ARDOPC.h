@@ -319,7 +319,6 @@ enum _ReceiveState		// used for initial receive testing...later put in correct p
 	AcquireFrameSync,
 	AcquireFrameType,
 	DecodeFrameType,
-	AcquireCarrierCount,	/* Phase 6.2b: read 4FSK signalling byte between frame-type and OFDM data */
 	AcquireFrame,
 	DecodeFramestate
 };
@@ -807,33 +806,5 @@ extern int ForcedOFDMMode;
  * [MinFrameCarriers, MaxFrameCarriers].
  */
 int ComputeCarriersNeeded(int length, int bytes_per_car, int mode_num_car);
-
-/* Phase 6.2b: on-air signalling of dynamic carrier count.
- *
- * CarriersSent  — set by EncodeOFDMData() to the count actually emitted
- *                 in the OFDM burst.  Read by ModOFDMDataAndPlay() to size
- *                 the modulator's inner loops and by the signalling-byte
- *                 emitter to know what to transmit.
- *
- * CarriersReceived — set by the RX path after decoding the 4FSK signalling
- *                    byte inserted between the frame-type and the OFDM
- *                    reference symbol.  0 means no override (pre-Phase-6.2b
- *                    peer or unavailable); non-zero overrides intNumCar
- *                    before InitDemodOFDM runs.
- *
- * On-air format of the signalling byte (1 byte, 4 symbols @ 50 baud 4FSK,
- * 960 samples @ 12kHz = 80 ms):
- *   bits 0..5  : (carriers - 1), range 0..42  → decoded carrier count 1..43
- *   bits 6..7  : parity symbol (ComputeTypeParity), validated on RX
- *
- * This IS a wire-format break vs Phase 6.1 peers — they will see a stray
- * 4FSK byte before the OFDM data and fail to decode.  Both ends must run
- * Phase 6.2b.
- */
-extern int CarriersSent;
-extern int CarriersReceived;
-UCHAR Encode4FSKCarrierCountByte(int carriers);
-int Decode4FSKCarrierCountByte(UCHAR raw_byte, int *out_carriers);
-void Mod4FSKCarrierCountByte(unsigned char rawByte);
 
 #endif
