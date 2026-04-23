@@ -118,6 +118,35 @@ void SendLeaderAndSYNC(UCHAR * bytEncodedBytes, int intLeaderLen)
 	}
 }
 
+/* Phase 6.2b: emit one 4FSK byte (4 symbols @ 50 baud, 960 samples) using
+ * the same modulator as the frame-type byte in SendLeaderAndSYNC.  The raw
+ * byte is already parity-encoded (6 payload bits + 2 parity).  Inserted
+ * between SendLeaderAndSYNC and the OFDM reference symbol in
+ * ModOFDMDataAndPlay so the receiver can pick up the carrier count BEFORE
+ * InitDemodOFDM runs. */
+void Mod4FSKCarrierCountByte(unsigned char rawByte)
+{
+	UCHAR bytMask = 0x30;
+	UCHAR bytSymToSend;
+	short intSample;
+	int k, n;
+
+	for (k = 0; k < 4; k++)
+	{
+		if (k < 3)
+			bytSymToSend = (bytMask & rawByte) >> (2 * (2 - k));
+		else
+			bytSymToSend = (rawByte & 0xC0) >> 6;  /* parity symbol directly */
+
+		for (n = 0; n < 240; n++)
+		{
+			intSample = intFSK50bdCarTemplate[bytSymToSend + 4][n];
+			SampleSink(intSample);
+		}
+		bytMask = bytMask >> 2;
+	}
+}
+
 void Mod4FSKDataAndPlay(unsigned char * bytEncodedBytes, int Len, int intLeaderLen)
 {
 	// Function to Modulate data encoded for 4FSK, create

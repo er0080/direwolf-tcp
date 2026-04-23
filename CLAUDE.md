@@ -140,3 +140,21 @@ immediately so the bug can be investigated. Never re-run with retry loops.
   (ARQ window > 1, 16QAM/32QAM modes) — see Phase 5b in the plan.
 - **Radio setup**: Both radios on 14.103 MHz USB-D, matched SSB TX filter ≥
   2.4 kHz, TX power ≤ 5 W for same-building testing.
+- **Phase 6.2b wire-format break — carrier-count signalling byte**: ardop-ip
+  emits one extra 4FSK byte (4 symbols @ 50 baud, ~80 ms, 960 samples @
+  12 kHz) between the leader/SYNC/2-byte frame-type and the OFDM reference
+  symbol, carrying `(carriers_sent - 1)` in bits 0..5 with a 2-bit parity
+  in bits 6..7 computed by `ComputeTypeParity`.  The decoder reads the
+  byte in the new `AcquireCarrierCount` state and overrides `intNumCar`
+  before `InitDemodOFDM` runs.  This is an on-air wire-format break vs.
+  Phase 6.1 and earlier peers (upstream ardopc): they have no state to
+  consume the extra 4FSK byte and will see misaligned OFDM reference
+  samples, leading to failed decodes.  BOTH ends must run Phase 6.2b or
+  later.  Non-OFDM frames (4PSK, 4FSK control, QAM, OFDMACK, Pkt*) are
+  unaffected — the byte is only inserted for OFDM data frames
+  (strMod == "OFDM" AND IsDataFrame).
+- **Phase 6.2b parity is detect-only**: the 2-bit parity field catches
+  single bit errors but cannot correct them.  A corrupted signalling byte
+  causes the RX to drop the frame and fall through to the sender's
+  frame-repeat path.  On-air bit-error robustness is validated by the
+  Phase 6.5 RF test suite.

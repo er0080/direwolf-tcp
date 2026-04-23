@@ -310,6 +310,8 @@ BOOL SearchFor2ToneLeader4(short * intNewSamples, int Length, float * dblOffsetH
 BOOL AcquireFrameSyncRSB();
 BOOL AcquireFrameSyncRSBAvg();
 int Acquire4FSKFrameType();
+int Acquire4FSKCarrierCountByte(void);	/* Phase 6.2b */
+void GoertzelRealImagHann120(short intRealIn[], int intPtr, int N, float m, float * dblReal, float * dblImag);
 
 void DemodulateFrame(int intFrameType);
 void Demod1Car4FSKChar(int Start, UCHAR * Decoded, int Carrier);
@@ -1189,8 +1191,19 @@ else if (intPhaseError > 2)
 			DummyCarrier = 0;	// pseudo carrier used for long 600 baud frames
 			Decode600Buffer = &bytFrameData[0][0];
 
-			State = AcquireFrame;
-			
+			/* Phase 6.2b: for OFDM DATA frames (strMod=="OFDM" and a data
+			 * frame type) divert to AcquireCarrierCount so we can read the
+			 * 4FSK signalling byte before InitDemodOFDM runs.  Other frame
+			 * types (4PSK, 4FSK control, QAM, OFDMACK, Pkt*) skip the new
+			 * byte entirely and go straight to AcquireFrame — no wire-
+			 * format change for them.
+			 *
+			 * NB: strMod here was set by FrameInfo() above. */
+			if (strcmp(strMod, "OFDM") == 0 && IsDataFrame(intFrameType))
+				State = AcquireCarrierCount;
+			else
+				State = AcquireFrame;
+
 			if (ProtocolMode == FEC && IsDataFrame(intFrameType) && ProtocolState != FECSend)
 				SetARDOPProtocolState(FECRcv);
 
@@ -1252,6 +1265,46 @@ else if (intPhaseError > 2)
 			PrintCarrierFlags();
 		}
 	}
+
+	/* Phase 6.2b: read the 4FSK carrier-count signalling byte (4 symbols,
+	 * 960 samples) that the TX inserted between the frame-type and the
+	 * OFDM reference symbol.  Only reached for OFDM data frames — see
+	 * the strMod=="OFDM"+IsDataFrame gate above. */
+	if (State == AcquireCarrierCount)
+	{
+		int cc = Acquire4FSKCarrierCountByte();
+		if (cc == -2)
+			return;		/* not enough samples yet */
+
+		if (cc == -1)
+		{
+			/* Parity failed — abandon frame.  Rely on the sender's frame
+			 * repeat mechanism; do not attempt to guess a carrier count. */
+			WriteDebugLog(LOGDEBUG,
+			    "Phase6.2b: carrier-count byte parity FAIL - drop frame");
+			State = SearchingForLeader;
+			ClearAllMixedSamples();
+			DiscardOldSamples();
+			return;
+		}
+
+		/* Override intNumCar for this frame so InitDemodOFDM / all
+		 * demod-side loops see only the emitted carriers. */
+		intNumCar = cc;
+
+		/* Consume the 960 signalling samples from the buffer, same way
+		 * frame-type bytes are consumed above (lines 1086-1094). */
+		intFilteredMixedSamplesLength -= intMFSReadPtr;
+		if (intFilteredMixedSamplesLength < 0)
+			WriteDebugLog(LOGDEBUG, "Phase6.2b Corrupt intFilteredMixedSamplesLength");
+		memmove(intFilteredMixedSamples,
+			&intFilteredMixedSamples[intMFSReadPtr],
+			intFilteredMixedSamplesLength * 2);
+		intMFSReadPtr = 0;
+
+		State = AcquireFrame;
+	}
+
 	// Acquire Frame
 
 	if (State == AcquireFrame)
@@ -3018,8 +3071,86 @@ int Acquire4FSKFrameType()
 			intFailedFSKFrameTypes++;
 	
 	intMFSReadPtr += (240 * 8);			 // advance to read pointer to the next symbol (if there is one)
-	
+
 	return NewType;
+}
+
+
+/* Phase 6.2b: Acquire and decode the 4FSK carrier-count signalling byte.
+ *
+ * Called once per frame between Acquire4FSKFrameType and InitDemodOFDM.
+ * Consumes 4 4FSK symbols (4 × 240 = 960 samples) from intFilteredMixed
+ * Samples, demodulates via Goertzel like DemodFrameType4FSK (but only 4
+ * symbols), reconstructs the byte using majority-tone selection the same
+ * way GetFrameTypeByte does, then validates via Decode4FSKCarrierCount
+ * Byte() (parity check).
+ *
+ * Returns:
+ *   -2  insufficient samples, retry later
+ *   -1  parity failed — caller should abandon frame (decode failure)
+ *   1..43  decoded carrier count (caller overrides intNumCar)
+ */
+int Acquire4FSKCarrierCountByte(void)
+{
+	float dblReal, dblImag;
+	int localToneMags[4 * 4];	/* 4 tones × 4 symbols */
+	int intPtr = intMFSReadPtr;
+	int i;
+	UCHAR rawByte = 0, parity = 0, bytSym;
+	int idx;
+	int out_carriers = 0;
+
+	if ((intFilteredMixedSamplesLength - intPtr) < 960)
+		return -2;
+
+	for (i = 0; i < 4; i++)
+	{
+		GoertzelRealImagHann120(intFilteredMixedSamples, intPtr, 240, 1350 / 50.0f, &dblReal, &dblImag);
+		localToneMags[4 * i]     = (int)powf(dblReal, 2) + powf(dblImag, 2);
+		GoertzelRealImagHann120(intFilteredMixedSamples, intPtr, 240, 1450 / 50.0f, &dblReal, &dblImag);
+		localToneMags[4 * i + 1] = (int)powf(dblReal, 2) + powf(dblImag, 2);
+		GoertzelRealImagHann120(intFilteredMixedSamples, intPtr, 240, 1550 / 50.0f, &dblReal, &dblImag);
+		localToneMags[4 * i + 2] = (int)powf(dblReal, 2) + powf(dblImag, 2);
+		GoertzelRealImagHann120(intFilteredMixedSamples, intPtr, 240, 1650 / 50.0f, &dblReal, &dblImag);
+		localToneMags[4 * i + 3] = (int)powf(dblReal, 2) + powf(dblImag, 2);
+		intPtr += 240;
+	}
+
+	/* Same majority-tone logic as GetFrameTypeByte for a single byte. */
+	for (i = 0; i < 4; i++)
+	{
+		idx = 4 * i;
+		if (localToneMags[idx] > localToneMags[idx + 1] && localToneMags[idx] > localToneMags[idx + 2] && localToneMags[idx] > localToneMags[idx + 3])
+			bytSym = 3;
+		else if (localToneMags[idx + 1] > localToneMags[idx] && localToneMags[idx + 1] > localToneMags[idx + 2] && localToneMags[idx + 1] > localToneMags[idx + 3])
+			bytSym = 2;
+		else if (localToneMags[idx + 2] > localToneMags[idx] && localToneMags[idx + 2] > localToneMags[idx + 1] && localToneMags[idx + 2] > localToneMags[idx + 3])
+			bytSym = 1;
+		else
+			bytSym = 0;
+
+		if (i < 3)
+			rawByte = (rawByte << 2) + bytSym;
+		else
+			parity = bytSym << 6;
+	}
+	rawByte |= parity;
+
+	intMFSReadPtr += 960;
+
+	if (!Decode4FSKCarrierCountByte(rawByte, &out_carriers))
+	{
+		WriteDebugLog(LOGDEBUG,
+		    "Phase6.2b RX signalling byte: parity FAIL raw=0x%02x",
+		    rawByte);
+		return -1;
+	}
+
+	WriteDebugLog(LOGDEBUG,
+	    "Phase6.2b RX signalling byte: raw=0x%02x -> %d carriers",
+	    rawByte, out_carriers);
+	CarriersReceived = out_carriers;
+	return out_carriers;
 }
 
 

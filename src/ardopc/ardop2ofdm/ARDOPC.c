@@ -1140,6 +1140,42 @@ int ComputeCarriersNeeded(int length, int bytes_per_car, int mode_num_car)
     return n;
 }
 
+/* Phase 6.2b: encode and decode the 4FSK signalling byte that announces
+ * the dynamic carrier count to the receiver.  One byte, identical layout
+ * to the frame-type byte (6 data bits + 2 parity), but carrying
+ * (carriers - 1) in the low 6 bits so values 1..43 fit in 0..42.
+ *
+ * See ARDOPC.h for the full wire-format spec.
+ */
+UCHAR Encode4FSKCarrierCountByte(int carriers)
+{
+    UCHAR payload = (UCHAR)((carriers - 1) & 0x3F);
+    UCHAR parity  = ComputeTypeParity(payload);
+    return (UCHAR)(payload | ((parity & 0x3) << 6));
+}
+
+/* Decode a raw byte recovered from the 4 4FSK symbols of the signalling
+ * slot.  Returns 1 (OK) and sets *out_carriers to a value in [1,43] if
+ * parity checks; returns 0 otherwise.  The parity check uses the same
+ * algorithm as CheckTypeParity() in SoundInput.c. */
+int Decode4FSKCarrierCountByte(UCHAR raw_byte, int *out_carriers)
+{
+    UCHAR payload = raw_byte & 0x3F;
+    UCHAR parity_rx = (raw_byte & 0xC0) >> 6;
+    UCHAR parity_expected = ComputeTypeParity(payload);
+    int n;
+
+    if (parity_rx != parity_expected)
+        return 0;
+
+    n = (int)payload + 1;
+    if (n < 1 || n > 43)
+        return 0;
+
+    if (out_carriers) *out_carriers = n;
+    return 1;
+}
+
 int RSEncode(UCHAR * bytToRS, UCHAR * RSBytes, int DataLen, int RSLen)
 {
 	// This just returns the Parity Bytes. I don't see the point

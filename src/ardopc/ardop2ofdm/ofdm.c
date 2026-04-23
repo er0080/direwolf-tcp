@@ -116,6 +116,9 @@ int NextOFDMBlock = 0;
 int UnAckedBlockPtr = 0;
 
 int CarriersSent;
+int CarriersReceived = 0;  /* Phase 6.2b: carrier count signalled in 4FSK
+                             * signalling byte on RX.  0 = no override yet
+                             * (use mode's natural intNumCar). */
 int BytesSent = 0;							// Sent but not acked
 
 int CarriersACKed;
@@ -827,11 +830,15 @@ int EncodeOFDMData(UCHAR bytFrameType, UCHAR * bytDataToSend, int Length, unsign
 	// Often the first carrier is the only one missed, and if we repeat it first it will always
 	// fail. So it would be good if logical block number 0 isn't always sent on carrier 0
 	
-	// The carrier number must match the block number so we can ack it. 
+	// The carrier number must match the block number so we can ack it.
 
 
-
-	for (i = 0; i < intNumCar; i++)		//  across all carriers
+	/* Phase 6.2b: shrink the per-carrier book-keeping loop from intNumCar to
+	 * CarriersSent.  When CarriersSent < intNumCar we actually emit fewer
+	 * OFDM carriers on-air and the signalling byte (Mod4FSKCarrierCountByte)
+	 * tells the receiver.  CarriersSent was computed above via
+	 * ComputeCarriersNeeded and is clamped into [1, intNumCar]. */
+	for (i = 0; i < CarriersSent; i++)		//  across all carriers
 	{
 		int blkLen;
 		int blkNum;
@@ -849,7 +856,7 @@ int EncodeOFDMData(UCHAR bytFrameType, UCHAR * bytDataToSend, int Length, unsign
 			UnackedOFDMBlocks[blkNum] = 1;
 
 		}
-		else if (Duplicate & (i >= ((intNumCar - firstNewCarrier) /2)))
+		else if (Duplicate & (i >= ((CarriersSent - firstNewCarrier) /2)))
 			goto repeatblocks;
 
 		else if (intCarDataCnt > intDataLen) // why not > ??
@@ -872,7 +879,7 @@ tryagain:
 				if (firstNewCarrier == -1)
 					firstNewCarrier = i;
 
-				if ((NextOFDMBlock + (intNumCar - i)) > limit)
+				if ((NextOFDMBlock + (CarriersSent - i)) > limit)
 				{
 					// no room
 
@@ -933,11 +940,12 @@ repeatblocks:
 	// have to modulate in that order, but must update SentOFDMBlocks with the real
 	// Carrier number
 
-	j = rand() % intNumCar;
+	/* Phase 6.2b: modulate only CarriersSent carriers on-air. */
+	j = rand() % CarriersSent;
 
-	for (i = 0; i < intNumCar; i++)
+	for (i = 0; i < CarriersSent; i++)
 	{
-		if (j >= intNumCar)
+		if (j >= CarriersSent)
 			j = 0;
 
 		SentOFDMBlockLen[i] = bytToRS[0] = OFDMBlockLen[j];
@@ -1575,15 +1583,28 @@ UCHAR bytLastSym[43];
 float dblOFDMCarRatio = 0.5f; 
 
 
+/* Phase 6.2b: shared helper that emits one 2PSK OFDM symbol across a
+ * contiguous carrier range.  Original SendOFDM2PSK centered the carriers
+ * via (MAXCAR - intNumCar)/2; SendOFDM2PSKFrom lets the caller pick the
+ * start index so a shrunken TX can still use the mode's original carrier
+ * positions (matching what the receiver sees after the 4FSK signalling
+ * byte tells it how many to demodulate). */
+void SendOFDM2PSKFrom(int symbol, int startIndex, int nCar);
+
 void SendOFDM2PSK(int symbol, int intNumCar)
 {
-	int intCarIndex = (MAXCAR - intNumCar) / 2;
+	SendOFDM2PSKFrom(symbol, (MAXCAR - intNumCar) / 2, intNumCar);
+}
+
+void SendOFDM2PSKFrom(int symbol, int startIndex, int nCar)
+{
+	int intCarIndex = startIndex;
 	int intSample;
 	int OFDMFrame[240] = {0};	// accumulated samples for each carrier
 	short OFDMSamples[240];		// 216 data, 24 CP
 	int i, n, p, q;					// start at 24, copy CP later
 
-	for (i = 0; i < intNumCar; i++) // across all active carriers
+	for (i = 0; i < nCar; i++) // across all active carriers
 	{					
 		p = 24;
 		memset(OFDMSamples, 0, sizeof(OFDMSamples));
@@ -1615,8 +1636,8 @@ void SendOFDM2PSK(int symbol, int intNumCar)
 
 	for (q = 0; q < 240; q++)
 	{
-		intSample = OFDMFrame[q] / intNumCar;
- 		SampleSink((intSample * OFDMLevel)/100);		
+		intSample = OFDMFrame[q] / nCar;
+ 		SampleSink((intSample * OFDMLevel)/100);
 	}
 }
 
@@ -1644,11 +1665,18 @@ void ModOFDMDataAndPlay(unsigned char * bytEncodedBytes, int Len, int intLeaderL
 	short OFDMSamples[240];		// 216 data, 24 CP
 	int p, q;					// start at 24, copy CP later
 	char fType[64];
+	int emitCar;   /* Phase 6.2b: number of carriers actually emitted. */
 
 	if (!FrameInfo(Type, &blnOdd, &intNumCar, strMod, &intBaud, &intDataLen, &intRSLen, &bytMinQualThresh, strType))
 		return;
 
-	intDataBytesPerCar = (Len - 2) / intNumCar;		// We queue the samples here, so dont copy below
+	/* Phase 6.2b: If EncodeOFDMData set CarriersSent < intNumCar we emit
+	 * only that many carriers on-air (and tell the receiver via the
+	 * signalling byte below).  Otherwise, fall back to the mode's full
+	 * carrier count (legacy behaviour). */
+	emitCar = (CarriersSent > 0 && CarriersSent <= intNumCar) ? CarriersSent : intNumCar;
+
+	intDataBytesPerCar = (Len - 2) / emitCar;		// We queue the samples here, so dont copy below
 
 	intCarIndex = intCarStartIndex = (MAXCAR - intNumCar) / 2;
 
@@ -1725,6 +1753,21 @@ void ModOFDMDataAndPlay(unsigned char * bytEncodedBytes, int Len, int intLeaderL
 
 	SendLeaderAndSYNC(bytEncodedBytes, intLeaderLen);
 
+	/* Phase 6.2b: emit carrier-count signalling byte immediately after the
+	 * leader+SYNC+frame-type.  One 4FSK byte = 4 symbols @ 50 baud = 960
+	 * samples @ 12 kHz (80 ms).  The receiver reads this right after
+	 * Acquire4FSKFrameType (state AcquireCarrierCount) and overrides
+	 * intNumCar before InitDemodOFDM.  Skipped for packet-frame header
+	 * path (PktFrameData / PktFrameHeader), which re-enters below. */
+	if (Type != PktFrameData && Type != PktFrameHeader)
+	{
+		UCHAR signalByte = Encode4FSKCarrierCountByte(emitCar);
+		Mod4FSKCarrierCountByte(signalByte);
+		WriteDebugLog(LOGDEBUG,
+		    "Phase6.2b TX signalling byte: emitCar=%d raw=0x%02x",
+		    emitCar, signalByte);
+	}
+
 	intPeakAmp = 0;
 
 	intDataPtr = 2;  // initialize pointer to start of data.
@@ -1737,7 +1780,12 @@ PktLoopBack:		// Reenter here to send rest of variable length packet frame
 	//	We have to do each carrier for each sample, as we write
 	//	the sample immediately
 
-	SendOFDM2PSK(0, intNumCar);				// Reference symbol is always zero, so same in any mode
+	/* Phase 6.2b: emit reference + 3 mode bits on the shrunk carrier set
+	 * starting at the mode's original intCarStartIndex.  This keeps the
+	 * emitted carriers at the same frequencies as a full-width frame would
+	 * use — the receiver picks them up via InitDemodOFDM iterating
+	 * intNumCar (post-override). */
+	SendOFDM2PSKFrom(0, intCarStartIndex, emitCar);
 
 	// Now send OFDM Type as 3 x 2PSK symbols. Same value sent on all carriers. The Type is send as 2PSK
 	// bytLastSym ends up correct
@@ -1745,19 +1793,19 @@ PktLoopBack:		// Reenter here to send rest of variable length packet frame
 
 	bytSym = (OFDMMode) & 1;
 	bytSymToSend = ((bytLastSym[intCarIndex] + bytSym) & 1);  // Values 0=1
-	SendOFDM2PSK(bytSymToSend, intNumCar);	
+	SendOFDM2PSKFrom(bytSymToSend, intCarStartIndex, emitCar);
 
 	bytSym = (OFDMMode >> 1) & 1;
 	bytSymToSend = ((bytLastSym[intCarIndex] + bytSym) & 1);  // Values 0-1
-	SendOFDM2PSK(bytSymToSend, intNumCar);
+	SendOFDM2PSKFrom(bytSymToSend, intCarStartIndex, emitCar);
 
 	bytSym = (OFDMMode >> 2) & 1;
 	bytSymToSend = ((bytLastSym[intCarIndex] + bytSym) & 1);  // Values 0-1
-	SendOFDM2PSK(bytSymToSend, intNumCar);
+	SendOFDM2PSKFrom(bytSymToSend, intCarStartIndex, emitCar);
 
 	// Correct bytLastSYM to match PSK level of actual mode
 
-	for (i = intCarStartIndex; i < intCarStartIndex + intNumCar; i++)
+	for (i = intCarStartIndex; i < intCarStartIndex + emitCar; i++)
 	{
 		if (OFDMMode == PSK4 || OFDMMode == PSK4S)
 			bytLastSym[i] <<= 1;
@@ -1780,8 +1828,8 @@ PktLoopBack:		// Reenter here to send rest of variable length packet frame
 			// carrier, so we can add the cyclic prefix
 
 				intCarIndex = intCarStartIndex; // initialize the carrrier index
-	
-				for (i = 0; i < intNumCar; i++) // across all active carriers
+
+				for (i = 0; i < emitCar; i++) // across all active carriers (Phase 6.2b: emitCar, was intNumCar)
 				{
 					if (OFDMMode == PSK2)
 					{
@@ -1875,8 +1923,8 @@ PktLoopBack:		// Reenter here to send rest of variable length packet frame
 
 				for (q = 0; q < 240; q++)
 				{
-					intSample = OFDMFrame[q] / intNumCar;
-			 		SampleSink((intSample * OFDMLevel)/100);		
+					intSample = OFDMFrame[q] / emitCar;
+			 		SampleSink((intSample * OFDMLevel)/100);
 					OFDMFrame[q] = 0;
 				}
 				
