@@ -1,3 +1,19 @@
+# direwolf-tcp — ARDOP branch (abandoned)
+
+> **Status: abandoned.** This branch explored replacing Direwolf with
+> [ardopcf](https://github.com/pflarue/ardop) as the RF modem.  ARDOP's
+> FEC datagram mode was successfully bridged to standard KISS/TCP via
+> `scripts/ardop_kiss_bridge.py`, and ICMP ping worked reliably at ~13 s
+> RTT.  However, TCP traffic failed: ARDOP's ~4.5 s frame time combined
+> with its single-frame-at-a-time half-duplex protocol means TCP's
+> retransmit timers (1 s default) flood the bridge queue with duplicate
+> frames before the first one is even on-air.  ARDOP is designed for
+> store-and-forward messages (email, large files via ARQ), not streaming
+> TCP sessions.  See the `master` branch for the working Direwolf-based
+> implementation.
+
+---
+
 # direwolf-tcp
 
 Point-to-point TCP/IP link test framework using [Direwolf](https://github.com/wb2osz/direwolf) TNC software, PipeWire/PulseAudio virtual audio cables, and [tncattach](https://github.com/markqvist/tncattach).
