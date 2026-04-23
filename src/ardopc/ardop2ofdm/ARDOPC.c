@@ -1078,6 +1078,24 @@ int NPAR = -1;	// Number of Parity Bytes - used in RS Code
 
 int MaxErrors = 0;
 
+/*
+ * Phase 6.1c (ardop-ip): tunable Reed-Solomon parity count per OFDM block.
+ *
+ * Default 20 (== PSK16 original).  Set at startup by main.c via the
+ * --fec-strength CLI flag (light=10, normal=20, strong=40).
+ *
+ * GetOFDMFrameInfo() applies this as an override AFTER picking the mode's
+ * natural intDataLen/intRSLen, preserving the total per-carrier air size
+ * (intDataLen + intRSLen + 4 bytes).  Shrinking parity grows payload and
+ * vice versa — the OFDM symbol count per carrier is fixed by the mode.
+ *
+ * CONSTRAINT (decoder side): the receiver also calls GetOFDMFrameInfo()
+ * with its local FECStrengthNPAR, so BOTH ends must be configured with
+ * the same --fec-strength value.  This is currently unsignalled on-air.
+ * See CLAUDE.md Phase 6.1c notes for future work (signal NPAR in header).
+ */
+int FECStrengthNPAR = 20;
+
 int RSEncode(UCHAR * bytToRS, UCHAR * RSBytes, int DataLen, int RSLen)
 {
 	// This just returns the Parity Bytes. I don't see the point

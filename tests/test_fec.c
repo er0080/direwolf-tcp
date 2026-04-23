@@ -21,7 +21,7 @@
 extern int NPAR;
 extern int MaxErrors;
 
-#define MY_NPAR   16    /* 8-symbol correction capacity */
+#define MY_NPAR   16    /* 8-symbol correction capacity (legacy tests) */
 #define DATA_LEN  100   /* message bytes */
 
 /* -- setUp / tearDown ------------------------------------------------------ */
@@ -32,36 +32,35 @@ void tearDown(void) {}
 /* -- Helpers: mirror RSEncode/RSDecode from ARDOPC.c ----------------------- */
 
 /*
- * Encode data[0..data_len-1] and write MY_NPAR parity bytes to
- * codeword[data_len..data_len+MY_NPAR-1].  codeword[0..data_len-1] is filled
- * with a copy of data.
+ * Encode data[0..data_len-1] with `npar` parity bytes.  Writes parity to
+ * codeword[data_len..data_len+npar-1] and copies data into codeword[0..].
  */
-static void rs_encode(const uint8_t *data, int data_len, uint8_t *codeword)
+static void rs_encode_n(const uint8_t *data, int data_len, int npar,
+                        uint8_t *codeword)
 {
-    int pad_len = 255 - data_len - MY_NPAR;
+    int pad_len = 255 - data_len - npar;
     uint8_t padded[256];
     memset(padded, 0, pad_len);
     memcpy(padded + pad_len, data, data_len);
 
-    NPAR      = MY_NPAR;
-    MaxErrors = MY_NPAR / 2;
+    NPAR      = npar;
+    MaxErrors = npar / 2;
     initialize_ecc();
 
-    encode_data(padded, 255 - MY_NPAR, codeword + data_len);
+    encode_data(padded, 255 - npar, codeword + data_len);
     memcpy(codeword, data, data_len);
 }
 
 /*
- * Decode codeword in place (mirrors RSDecode from ARDOPC.c).
- * codeword layout: [data (data_len bytes)] [parity (MY_NPAR bytes)]
+ * Decode codeword in place using `npar` parity bytes.
+ * codeword layout: [data (data_len bytes)] [parity (npar bytes)]
  *
- * Returns 1 if codeword was clean or corrections succeeded.
- * Returns 0 if uncorrectable.
+ * Returns 1 if codeword was clean or corrections succeeded, 0 if uncorrectable.
  * On success, codeword[0..data_len-1] holds corrected data.
  */
-static int rs_decode(uint8_t *codeword, int data_len)
+static int rs_decode_n(uint8_t *codeword, int data_len, int npar)
 {
-    int total   = data_len + MY_NPAR;
+    int total   = data_len + npar;
     int pad_len = 255 - total;
     uint8_t tmp[256];
     uint8_t *out = tmp;
@@ -78,12 +77,12 @@ static int rs_decode(uint8_t *codeword, int data_len)
 
     /* Reverse parity portion */
     src = codeword + total - 1;
-    for (i = 0; i < MY_NPAR; i++)
+    for (i = 0; i < npar; i++)
         *out++ = *src--;
 
-    if (NPAR != MY_NPAR) {
-        NPAR      = MY_NPAR;
-        MaxErrors = MY_NPAR / 2;
+    if (NPAR != npar) {
+        NPAR      = npar;
+        MaxErrors = npar / 2;
         initialize_ecc();
     }
 
@@ -105,6 +104,16 @@ static int rs_decode(uint8_t *codeword, int data_len)
     for (i = 0; i < data_len; i++)
         codeword[i] = *src--;
     return 1;
+}
+
+/* Legacy wrappers used by the original test_fec_* cases (MY_NPAR=16). */
+static void rs_encode(const uint8_t *data, int data_len, uint8_t *codeword)
+{
+    rs_encode_n(data, data_len, MY_NPAR, codeword);
+}
+static int rs_decode(uint8_t *codeword, int data_len)
+{
+    return rs_decode_n(codeword, data_len, MY_NPAR);
 }
 
 static void fill_payload(uint8_t *buf, int len)
@@ -185,6 +194,102 @@ void test_fec_uncorrectable(void)
         "decode returned success on 9-byte error (beyond MY_NPAR/2 -- should fail)");
 }
 
+/* -- Phase 6.1c: --fec-strength {light|normal|strong} ---------------------- *
+ *
+ * light  = NPAR 10 → 5-byte correction capacity per block
+ * normal = NPAR 20 → 10-byte   (PSK16 original)
+ * strong = NPAR 40 → 20-byte
+ *
+ * For each strength we verify:
+ *   1. Clean round-trip is byte-identical
+ *   2. NPAR/2 scattered byte errors are corrected
+ *   3. NPAR/2 + 1 scattered byte errors exceed capacity (decode fails)
+ *
+ * Block layout: we use a DATA_LEN=80 payload (matches PSK16's natural size)
+ * so the whole codeword (data+parity) fits well under 255. */
+
+#define STRENGTH_DATA_LEN 80
+
+static void scatter_errors(uint8_t *codeword, int codeword_len, int n_errors)
+{
+    /* Deterministic, UNIQUE positions using a prime-stride walk so we never
+     * double-hit the same byte (which would halve effective error count). */
+    int pos = 3;
+    int stride = 13;           /* coprime with realistic codeword_len values */
+    for (int i = 0; i < n_errors; i++) {
+        pos = pos % codeword_len;
+        codeword[pos] ^= (uint8_t)(0xA5 + i);
+        pos += stride;
+    }
+    (void)codeword_len;
+}
+
+static void run_roundtrip(int npar)
+{
+    uint8_t payload[STRENGTH_DATA_LEN];
+    uint8_t codeword[STRENGTH_DATA_LEN + 64];
+
+    fill_payload(payload, STRENGTH_DATA_LEN);
+    rs_encode_n(payload, STRENGTH_DATA_LEN, npar, codeword);
+
+    int ok = rs_decode_n(codeword, STRENGTH_DATA_LEN, npar);
+    TEST_ASSERT_TRUE_MESSAGE(ok, "clean codeword rejected");
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE(payload, codeword, STRENGTH_DATA_LEN,
+                                     "clean decode does not match input");
+}
+
+static void run_correctable(int npar)
+{
+    uint8_t payload[STRENGTH_DATA_LEN];
+    uint8_t codeword[STRENGTH_DATA_LEN + 64];
+    int total = STRENGTH_DATA_LEN + npar;
+
+    fill_payload(payload, STRENGTH_DATA_LEN);
+    rs_encode_n(payload, STRENGTH_DATA_LEN, npar, codeword);
+
+    scatter_errors(codeword, total, npar / 2);
+
+    int ok = rs_decode_n(codeword, STRENGTH_DATA_LEN, npar);
+    TEST_ASSERT_TRUE_MESSAGE(ok, "NPAR/2 errors should be correctable");
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE(payload, codeword, STRENGTH_DATA_LEN,
+                                     "NPAR/2 errors not fully corrected");
+}
+
+static void run_uncorrectable(int npar)
+{
+    uint8_t payload[STRENGTH_DATA_LEN];
+    uint8_t codeword[STRENGTH_DATA_LEN + 64];
+    int total = STRENGTH_DATA_LEN + npar;
+
+    fill_payload(payload, STRENGTH_DATA_LEN);
+    rs_encode_n(payload, STRENGTH_DATA_LEN, npar, codeword);
+
+    scatter_errors(codeword, total, npar / 2 + 1);
+
+    int ok = rs_decode_n(codeword, STRENGTH_DATA_LEN, npar);
+
+    /* RS is guaranteed to correct up to NPAR/2 errors.  Beyond that, the
+     * decoder may either (a) return failure, or (b) miscorrect to a
+     * different valid codeword — both outcomes are "unrecoverable" from
+     * the application's perspective.  Accept either, but reject the
+     * impossible case where it claims success AND recovers the original. */
+    int recovered = (ok && memcmp(codeword, payload, STRENGTH_DATA_LEN) == 0);
+    TEST_ASSERT_FALSE_MESSAGE(recovered,
+        "NPAR/2+1 errors must exceed guaranteed correction capacity");
+}
+
+void test_fec_roundtrip_light (void) { run_roundtrip(10); }
+void test_fec_roundtrip_normal(void) { run_roundtrip(20); }
+void test_fec_roundtrip_strong(void) { run_roundtrip(40); }
+
+void test_fec_correctable_light (void) { run_correctable(10); }
+void test_fec_correctable_normal(void) { run_correctable(20); }
+void test_fec_correctable_strong(void) { run_correctable(40); }
+
+void test_fec_uncorrectable_light (void) { run_uncorrectable(10); }
+void test_fec_uncorrectable_normal(void) { run_uncorrectable(20); }
+void test_fec_uncorrectable_strong(void) { run_uncorrectable(40); }
+
 /* -- Main ------------------------------------------------------------------ */
 
 int main(void)
@@ -194,5 +299,18 @@ int main(void)
     RUN_TEST(test_fec_single_bit_error);
     RUN_TEST(test_fec_burst_error);
     RUN_TEST(test_fec_uncorrectable);
+
+    RUN_TEST(test_fec_roundtrip_light);
+    RUN_TEST(test_fec_roundtrip_normal);
+    RUN_TEST(test_fec_roundtrip_strong);
+
+    RUN_TEST(test_fec_correctable_light);
+    RUN_TEST(test_fec_correctable_normal);
+    RUN_TEST(test_fec_correctable_strong);
+
+    RUN_TEST(test_fec_uncorrectable_light);
+    RUN_TEST(test_fec_uncorrectable_normal);
+    RUN_TEST(test_fec_uncorrectable_strong);
+
     return UNITY_END();
 }

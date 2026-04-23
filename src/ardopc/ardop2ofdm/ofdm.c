@@ -709,8 +709,37 @@ void GetOFDMFrameInfo(int OFDMMode, int * intDataLen, int * intRSLen, int * Mode
 
 
 	default:
-				
+
 		*intDataLen = *intRSLen = 0;
+	}
+
+	/* Phase 6.1c: apply the runtime FEC-strength override.
+	 *
+	 * Per-carrier air bytes = intDataLen + intRSLen + 4 (2 header + 2 CRC).
+	 * The OFDM symbol count per carrier is fixed by the mode, so the total
+	 * intDataLen+intRSLen is a HARD conservation invariant — we cannot grow
+	 * parity without shrinking payload by the same amount.
+	 *
+	 * We override intRSLen with FECStrengthNPAR (clamped) and compute the
+	 * complementary intDataLen.  Both encoder (EncodeOFDMData) and decoder
+	 * (InitDemodOFDM) call this function, so both sides see the same adjusted
+	 * (data, parity) split — provided both are configured with the same
+	 * --fec-strength.
+	 *
+	 * We skip invalid modes (intDataLen+intRSLen == 0) and the tiny
+	 * ACK/PSK4S modes where the override makes no sense. */
+	if (*intDataLen > 0 && *intRSLen > 0)
+	{
+		int total = *intDataLen + *intRSLen;
+		int newRS = FECStrengthNPAR;
+
+		if (newRS < 2)       newRS = 2;
+		if (newRS > 60)      newRS = 60;
+		if (newRS & 1)       newRS++;           /* RS parity must be even */
+		if (newRS >= total)  newRS = total - 1; /* leave room for data   */
+
+		*intRSLen   = newRS;
+		*intDataLen = total - newRS;
 	}
 }
 

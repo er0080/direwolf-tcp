@@ -769,4 +769,8 @@ extern int SavedFrameType;
 
 extern const char OFDMModes[8][6];
 
+/* Phase 6.1c: runtime-tunable Reed-Solomon parity count (NPAR) per OFDM
+ * block.  Override applied in GetOFDMFrameInfo().  See ARDOPC.c for docs. */
+extern int FECStrengthNPAR;
+
 #endif

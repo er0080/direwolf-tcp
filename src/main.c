@@ -30,6 +30,7 @@ extern UCHAR                 PTTOnCmdLen;
 extern UCHAR                 PTTOffCmd[];
 extern UCHAR                 PTTOffCmdLen;
 extern HANDLE                hCATDevice;
+extern int                   FECStrengthNPAR;
 
 void ardopmain(void);
 void tun_ardopc_init(int tun_fd, const char *fec_mode);
@@ -116,6 +117,10 @@ static void usage(const char *prog)
         "FEC mode:\n"
         "  --bw   BW         Bandwidth Hz: 200|500|2500 (default: 2500)\n"
         "                    Selects the OFDM FEC mode (OFDM.{BW}.55).\n"
+        "  --fec-strength S  RS parity per OFDM block: light|normal|strong\n"
+        "                    (NPAR = 10 | 20 | 40, default: normal).\n"
+        "                    Both peers MUST use the same value — NPAR is\n"
+        "                    not signalled on-air.\n"
         "\n"
         "CI-V radio control:\n"
         "  --civ-port PORT   Serial port (e.g. /dev/ic_705_a)\n"
@@ -139,19 +144,21 @@ int main(int argc, char *argv[])
     uint8_t     civ_addr = 0;
     int         mtu      = 1460;
     int         bw       = 2;   /* XB2500 — 2500 Hz */
+    int         fec_npar = 20;  /* normal */
 
     static struct option long_opts[] = {
-        { "audio",     required_argument, 0, 'a' },
-        { "mycall",    required_argument, 0, 'm' },
-        { "local-ip",  required_argument, 0, 'l' },
-        { "peer-ip",   required_argument, 0, 'r' },
-        { "tun-dev",   required_argument, 0, 'd' },
-        { "civ-port",  required_argument, 0, 'P' },
-        { "civ-addr",  required_argument, 0, 'A' },
-        { "civ-baud",  required_argument, 0, 'B' },
-        { "bw",        required_argument, 0, 'w' },
-        { "mtu",       required_argument, 0, 'M' },
-        { "help",      no_argument,       0, 'h' },
+        { "audio",        required_argument, 0, 'a' },
+        { "mycall",       required_argument, 0, 'm' },
+        { "local-ip",     required_argument, 0, 'l' },
+        { "peer-ip",      required_argument, 0, 'r' },
+        { "tun-dev",      required_argument, 0, 'd' },
+        { "civ-port",     required_argument, 0, 'P' },
+        { "civ-addr",     required_argument, 0, 'A' },
+        { "civ-baud",     required_argument, 0, 'B' },
+        { "bw",           required_argument, 0, 'w' },
+        { "mtu",          required_argument, 0, 'M' },
+        { "fec-strength", required_argument, 0, 'S' },
+        { "help",         no_argument,       0, 'h' },
         { 0, 0, 0, 0 }
     };
 
@@ -169,6 +176,16 @@ int main(int argc, char *argv[])
         case 'B': civ_baud  = atoi(optarg);    break;
         case 'w': bw        = bw_index(optarg); break;
         case 'M': mtu       = atoi(optarg);    break;
+        case 'S':
+            if (strcmp(optarg, "light") == 0)       fec_npar = 10;
+            else if (strcmp(optarg, "normal") == 0) fec_npar = 20;
+            else if (strcmp(optarg, "strong") == 0) fec_npar = 40;
+            else {
+                fprintf(stderr, "ardop-ip: unknown --fec-strength '%s' "
+                                "(use light|normal|strong)\n", optarg);
+                usage(argv[0]); return 1;
+            }
+            break;
         case 'h': usage(argv[0]); return 0;
         default:  usage(argv[0]); return 1;
         }
@@ -194,6 +211,7 @@ int main(int argc, char *argv[])
     strncpy(PlaybackDevice, audio,  79);
     ARQBandwidth = (enum _ARQBandwidth)bw;
     UseKISS      = FALSE;
+    FECStrengthNPAR = fec_npar;
 
     /* FEC mode string: pick from --bw value. */
     const char *fec_mode;
@@ -238,7 +256,11 @@ int main(int argc, char *argv[])
     sigaction(SIGHUP,  &act, NULL);
     sigaction(SIGPIPE, &act, NULL);
 
-    printf("ardop-ip: %s  %s  FEC %s\n", mycall, audio, fec_mode);
+    const char *strength =
+        (fec_npar == 10) ? "light"  :
+        (fec_npar == 40) ? "strong" : "normal";
+    printf("ardop-ip: %s  %s  FEC %s  strength %s (NPAR=%d)\n",
+           mycall, audio, fec_mode, strength, fec_npar);
 
     ardopmain();
 
