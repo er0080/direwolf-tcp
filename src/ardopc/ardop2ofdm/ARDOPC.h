@@ -787,6 +787,12 @@ extern int MinFrameCarriers;
 extern int MaxFrameCarriers;
 
 /*
+ * Phase 6.3a: when >= 0, EncodeOFDMData pins OFDMMode to this value.
+ * Set via --force-mode on ardop-ip.  Default -1 (gearshift runs normally).
+ */
+extern int ForcedOFDMMode;
+
+/*
  * Phase 6.2: compute the number of OFDM carriers needed for a payload.
  *
  * Encapsulates the clamp rules so the logic is unit-testable independently

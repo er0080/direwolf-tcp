@@ -1121,6 +1121,14 @@ int MinFrameCarriers = 1;
 int MaxFrameCarriers = MAXCAR;   /* 43 */
 
 /*
+ * Phase 6.3a: --force-mode testing knob.  When >= 0, EncodeOFDMData pins
+ * OFDMMode to this value before encoding each frame — gearshift is fully
+ * bypassed.  Default -1 (disabled) preserves normal gearshift behaviour.
+ * Values: PSK2=0, PSK4=1, PSK8=2, QAM16=3, PSK16=4 (see ARDOPC.h).
+ */
+int ForcedOFDMMode = -1;
+
+/*
  * Phase 6.2: shared carrier-count helper used by EncodeOFDMData and by
  * tests/test_varsize.  Keeps the clamp rules in one place.
  */

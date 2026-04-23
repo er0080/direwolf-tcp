@@ -267,14 +267,16 @@ void ProcessOFDMNak(int AckType)
 
 	if (((AckedPercent < 60) && (CarriersNAKed >= 2 * CarriersSent)) || OFDMCarriersAcked[OFDMMode] == 0)
 	{
+		/* Phase 6.3a: QAM16 selection enabled.  Previously the gearshift
+		 * skipped this mode (both up-shift and down-shift paths).  The
+		 * encoder/decoder for QAM16 are complete and the RX dispatch
+		 * already routes QAM16 to Decode1CarOFDM(). */
 		if (OFDMMode > 0)
 		{
 			intNAKctr = 0;
 			intACKctr = 0;
 
 			OFDMMode--;
-			if (OFDMMode == QAM16)		// skip 16QAM
-				OFDMMode = PSK8;
 
 			CarriersACKed = CarriersNAKed = 0;
 			WriteDebugLog(LOGDEBUG, "OFDM Acked Percent %d. Shift down to Mode %d", AckedPercent, OFDMMode) ;
@@ -464,8 +466,6 @@ int ProcessOFDMAck(int AckType)
 			if (OFDMMode > 0)
 			{
 				OFDMMode--;
-				if (OFDMMode == QAM16)		// skip 16QAM
-					OFDMMode = PSK8;
 
 				WriteDebugLog(LOGDEBUG, "OFDM Acked Percent %d. Shift down to Mode %d", AckedPercent, OFDMMode) ;
 			}
@@ -504,9 +504,6 @@ int ProcessOFDMAck(int AckType)
 
 				int NextMode = 	OFDMMode + 1;
 				int NextPercent= 0;
-					
-				if (NextMode == QAM16)
-					NextMode = PSK16;		// Skip QAM for testing
 
 				if (OFDMCarriersNaked[NextMode])	// Only if we've tried it
 				{
@@ -572,9 +569,7 @@ int ProcessOFDMAck(int AckType)
 				if (OFDMMode < PSK16)
 				{
 					OFDMMode++;
-					if (OFDMMode == QAM16)
-						OFDMMode = PSK16;		// Skip QAM dor testing
-	
+
 					if (OFDMCarriersNaked[OFDMMode])	// Only if we've tried it
 					{
 						int NextPercent = (100 * OFDMCarriersAcked[OFDMMode]) / OFDMCarriersNaked[OFDMMode];
@@ -584,10 +579,8 @@ int ProcessOFDMAck(int AckType)
 							if ((CarriersACKed + CarriersNAKed) < CarriersSent * 8)
 							{
 								// dont shift
-				
+
 								OFDMMode--;
-								if (OFDMMode == QAM16)
-									OFDMMode = PSK8;		// Skip QAM dor testing
 
 								return Acked;
 							}
@@ -778,6 +771,10 @@ int EncodeOFDMData(UCHAR bytFrameType, UCHAR * bytDataToSend, int Length, unsign
 
 	if (intDataLen == 0 || Length == 0 || !blnFrameTypeOK)
 		return 0;
+
+	/* Phase 6.3a: --force-mode pin.  If set, bypass gearshift entirely. */
+	if (ForcedOFDMMode >= 0 && ForcedOFDMMode <= PSK16)
+		OFDMMode = ForcedOFDMMode;
 
 	GetOFDMFrameInfo(OFDMMode, &intDataLen, &intRSLen, &Dummy, &Dummy);
 

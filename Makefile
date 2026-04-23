@@ -67,7 +67,7 @@ src/%.o: src/%.c
 
 -include $(OBJS:.o=.d)
 
-TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq tests/test_tun_fec tests/test_varsize
+TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq tests/test_tun_fec tests/test_varsize tests/test_qam
 
 clean:
 	rm -f ardop-ip $(TEST_BINS) $(OBJS) $(OBJS:.o=.d) tests/*.o tests/*.d
@@ -144,4 +144,13 @@ test_varsize: tests/test_varsize
 tests/test_varsize: tests/test_varsize.c $(UNITY_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
 
-test: test_tun test_civ test_fec test_arq test_tun_fec test_varsize
+# ── Phase 6.3a: QAM16 enable / constellation unit tests ──────────────────
+test_qam: tests/test_qam
+	tests/test_qam
+
+# Standalone — duplicates the small QAM16 constellation math, same pattern
+# as test_varsize.  No ARDOPC.o link.
+tests/test_qam: tests/test_qam.c $(UNITY_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@
+
+test: test_tun test_civ test_fec test_arq test_tun_fec test_varsize test_qam

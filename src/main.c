@@ -127,6 +127,9 @@ static void usage(const char *prog)
         "  --max-frame-carriers N   maximum OFDM carriers per TX (default 43)\n"
         "                    Phase 6.2: encoder sizes carriers to payload.\n"
         "                    Defaults preserve Phase 6.1 on-air behaviour.\n"
+        "  --force-mode M    Pin OFDM mode (bypass gearshift).  One of:\n"
+        "                    PSK2|PSK4|PSK8|QAM16|PSK16.  Default: unset.\n"
+        "                    Phase 6.3a: for bench/RF testing only.\n"
         "\n"
         "CI-V radio control:\n"
         "  --civ-port PORT   Serial port (e.g. /dev/ic_705_a)\n"
@@ -153,6 +156,7 @@ int main(int argc, char *argv[])
     int         fec_npar = 20;  /* normal */
     int         min_car  = 1;   /* Phase 6.2 default: 1 carrier minimum */
     int         max_car  = 43;  /* Phase 6.2 default: MAXCAR ceiling */
+    int         force_mode = -1; /* Phase 6.3a: disabled by default */
 
     static struct option long_opts[] = {
         { "audio",        required_argument, 0, 'a' },
@@ -168,6 +172,7 @@ int main(int argc, char *argv[])
         { "fec-strength", required_argument, 0, 'S' },
         { "min-frame-carriers", required_argument, 0, 'n' },
         { "max-frame-carriers", required_argument, 0, 'x' },
+        { "force-mode",   required_argument, 0, 'F' },
         { "help",         no_argument,       0, 'h' },
         { 0, 0, 0, 0 }
     };
@@ -198,6 +203,18 @@ int main(int argc, char *argv[])
             break;
         case 'n': min_car = atoi(optarg); break;
         case 'x': max_car = atoi(optarg); break;
+        case 'F':
+            if      (strcmp(optarg, "PSK2")  == 0) force_mode = 0;
+            else if (strcmp(optarg, "PSK4")  == 0) force_mode = 1;
+            else if (strcmp(optarg, "PSK8")  == 0) force_mode = 2;
+            else if (strcmp(optarg, "QAM16") == 0) force_mode = 3;
+            else if (strcmp(optarg, "PSK16") == 0) force_mode = 4;
+            else {
+                fprintf(stderr, "ardop-ip: unknown --force-mode '%s' "
+                                "(use PSK2|PSK4|PSK8|QAM16|PSK16)\n", optarg);
+                usage(argv[0]); return 1;
+            }
+            break;
         case 'h': usage(argv[0]); return 0;
         default:  usage(argv[0]); return 1;
         }
@@ -232,6 +249,9 @@ int main(int argc, char *argv[])
     if (max_car > 43) max_car = 43;
     MinFrameCarriers = min_car;
     MaxFrameCarriers = max_car;
+
+    /* Phase 6.3a: apply --force-mode if set.  Gearshift is bypassed at TX time. */
+    ForcedOFDMMode = force_mode;
 
     /* FEC mode string: pick from --bw value. */
     const char *fec_mode;
@@ -279,10 +299,13 @@ int main(int argc, char *argv[])
     const char *strength =
         (fec_npar == 10) ? "light"  :
         (fec_npar == 40) ? "strong" : "normal";
+    static const char *ofdm_mode_names[5] = { "PSK2","PSK4","PSK8","QAM16","PSK16" };
+    const char *forced = (force_mode >= 0 && force_mode <= 4)
+                         ? ofdm_mode_names[force_mode] : "off";
     printf("ardop-ip: %s  %s  FEC %s  strength %s (NPAR=%d) "
-           "carriers=[%d..%d]\n",
+           "carriers=[%d..%d]  force-mode=%s\n",
            mycall, audio, fec_mode, strength, fec_npar,
-           MinFrameCarriers, MaxFrameCarriers);
+           MinFrameCarriers, MaxFrameCarriers, forced);
 
     ardopmain();
 
