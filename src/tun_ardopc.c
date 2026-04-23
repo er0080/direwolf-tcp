@@ -22,24 +22,34 @@
 #include "ARDOPC.h"
 #include "tun_interface.h"
 
-static int  g_tun_fd = -1;
+static int  g_tun_fd    = -1;
+static int  g_fec_repeats = 0;                 /* --fec-repeats; 0 = send once */
 static char g_fec_mode[16] = "OFDM.2500.55";   /* default; set by init() */
 
 /* ProtocolState/ProtocolMode are declared in ARDOPC.h. */
 
 /*
  * Initialise the TUN/FEC bridge.
- * @tun_fd    — file descriptor returned by tun_open()
- * @fec_mode  — ARDOP FEC mode string (e.g. "OFDM.2500.55", "OFDM.500.55");
- *              must be one of the entries in strAllDataModes[]
+ * @tun_fd       — file descriptor returned by tun_open()
+ * @fec_mode     — ARDOP FEC mode string (e.g. "OFDM.2500.55", "OFDM.500.55");
+ *                 must be one of the entries in strAllDataModes[]
+ * @fec_repeats  — ARDOP FEC repeat count (0..5).  0 = transmit each packet
+ *                 once; higher values re-transmit the same packet that many
+ *                 additional times, trading air-time for single-packet
+ *                 reliability.  TCP retransmits are still handled above us,
+ *                 so 0 is a reasonable default; bump to 1 for UDP-heavy
+ *                 workloads or marginal links.
  */
-void tun_ardopc_init(int tun_fd, const char *fec_mode)
+void tun_ardopc_init(int tun_fd, const char *fec_mode, int fec_repeats)
 {
     g_tun_fd = tun_fd;
     if (fec_mode && *fec_mode) {
         strncpy(g_fec_mode, fec_mode, sizeof(g_fec_mode) - 1);
         g_fec_mode[sizeof(g_fec_mode) - 1] = '\0';
     }
+    if (fec_repeats < 0) fec_repeats = 0;
+    if (fec_repeats > 5) fec_repeats = 5;
+    g_fec_repeats = fec_repeats;
     ProtocolMode = FEC;
 }
 
@@ -97,5 +107,5 @@ void TUNHostPoll(void)
     if (len < 20 || ((buf[0] & 0xF0) != 0x40 && (buf[0] & 0xF0) != 0x60))
         return;
 
-    StartFEC(buf, len, g_fec_mode, /*intRepeats=*/0, /*blnSendID=*/FALSE);
+    StartFEC(buf, len, g_fec_mode, g_fec_repeats, /*blnSendID=*/FALSE);
 }

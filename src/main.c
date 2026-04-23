@@ -35,7 +35,7 @@ extern int                   MinFrameCarriers;
 extern int                   MaxFrameCarriers;
 
 void ardopmain(void);
-void tun_ardopc_init(int tun_fd, const char *fec_mode);
+void tun_ardopc_init(int tun_fd, const char *fec_mode, int fec_repeats);
 
 /* ── CI-V PTT frame builder ──────────────────────────────────────────────── */
 
@@ -123,6 +123,11 @@ static void usage(const char *prog)
         "                    (NPAR = 10 | 20 | 40, default: normal).\n"
         "                    Both peers MUST use the same value — NPAR is\n"
         "                    not signalled on-air.\n"
+        "  --fec-repeats N   Redundant re-transmissions per packet (0..5,\n"
+        "                    default 0).  0 = send once, 1 = send twice, etc.\n"
+        "                    Without ARQ a single dropped frame is lost;\n"
+        "                    bump this if you need UDP reliability on\n"
+        "                    marginal links (at 2x air-time cost per +1).\n"
         "  --min-frame-carriers N   minimum OFDM carriers per TX (default 1)\n"
         "  --max-frame-carriers N   maximum OFDM carriers per TX (default 43)\n"
         "                    Phase 6.2: encoder sizes carriers to payload.\n"
@@ -161,6 +166,7 @@ int main(int argc, char *argv[])
     int         min_car  = 1;   /* Phase 6.2 default: 1 carrier minimum */
     int         max_car  = 43;  /* Phase 6.2 default: MAXCAR ceiling */
     int         force_mode = -1; /* Phase 6.3a: disabled by default */
+    int         fec_repeats = 0; /* Phase 6.5: 0 = transmit once, 1-5 = redundant sends */
 
     static struct option long_opts[] = {
         { "audio",        required_argument, 0, 'a' },
@@ -174,6 +180,7 @@ int main(int argc, char *argv[])
         { "bw",           required_argument, 0, 'w' },
         { "mtu",          required_argument, 0, 'M' },
         { "fec-strength", required_argument, 0, 'S' },
+        { "fec-repeats",  required_argument, 0, 'R' },
         { "min-frame-carriers", required_argument, 0, 'n' },
         { "max-frame-carriers", required_argument, 0, 'x' },
         { "force-mode",   required_argument, 0, 'F' },
@@ -202,6 +209,13 @@ int main(int argc, char *argv[])
             else {
                 fprintf(stderr, "ardop-ip: unknown --fec-strength '%s' "
                                 "(use light|normal|strong)\n", optarg);
+                usage(argv[0]); return 1;
+            }
+            break;
+        case 'R':
+            fec_repeats = atoi(optarg);
+            if (fec_repeats < 0 || fec_repeats > 5) {
+                fprintf(stderr, "ardop-ip: --fec-repeats must be 0..5\n");
                 usage(argv[0]); return 1;
             }
             break;
@@ -290,7 +304,7 @@ int main(int argc, char *argv[])
     tun_configure(tun_fd, tun_dev, local_ip, peer_ip, mtu);
     printf("TUN: %s  %s <-> %s  MTU %d\n", tun_dev, local_ip, peer_ip, mtu);
 
-    tun_ardopc_init(tun_fd, fec_mode);
+    tun_ardopc_init(tun_fd, fec_mode, fec_repeats);
 
     /* ── Signal handlers ────────────────────────────────────────────────── */
 

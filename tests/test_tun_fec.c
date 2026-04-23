@@ -24,7 +24,7 @@
 #include "unity.h"
 
 /* We call into tun_ardopc.c's public entry points: */
-void tun_ardopc_init(int tun_fd, const char *fec_mode);
+void tun_ardopc_init(int tun_fd, const char *fec_mode, int fec_repeats);
 void TUNDeliverToHost(unsigned char *data, const char *tag, int len);
 void TUNHostPoll(void);
 
@@ -40,7 +40,7 @@ void setUp(void)
     /* Non-blocking so reads after delivery don't hang. */
     fcntl(pipe_read,  F_SETFL, O_NONBLOCK);
     fcntl(pipe_write, F_SETFL, O_NONBLOCK);
-    tun_ardopc_init(pipe_write, "OFDM.2500.55");
+    tun_ardopc_init(pipe_write, "OFDM.2500.55", 0);
 }
 
 void tearDown(void)
