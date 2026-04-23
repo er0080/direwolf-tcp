@@ -1,3 +1,6 @@
 [submodule "tncattach"]
 	path = tncattach
 	url = https://github.com/markqvist/tncattach.git
+[submodule "src/ardopc"]
+	path = src/ardopc
+	url = https://github.com/DigitalHERMES/ardopc

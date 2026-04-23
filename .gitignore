@@ -1,3 +1,6 @@
 logs/
 tncattach/tncattach
 tncattach/*.o
+ardop-ip
+*.o
+*.d
