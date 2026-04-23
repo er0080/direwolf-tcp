@@ -1,9 +1,6 @@
 /*
  * civ_control.c — Icom CI-V PTT and radio control for ardop-ip
  *
- * Phase 1: skeleton implementation — symbols are defined so the build
- * links cleanly.  Full implementation is added in Phase 3.
- *
  * CI-V frame structure:
  *   FE FE <radio_addr> <ctrl=0xE0> <cmd> [<sub-cmd>] [data...] FD
  *
@@ -12,9 +9,11 @@
  */
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/select.h>
 
 #include "ardopc/ardop2ofdm/ARDOPC.h"
 #include "civ_control.h"
@@ -30,8 +29,8 @@ extern int    ReadCOMBlock(HANDLE fd, char *Block, int MaxLength);
 #define CIV_CTRL       0xE0
 #define CIV_EOT        0xFD
 
-/* Maximum CI-V response frame length */
-#define CIV_MAX_FRAME  32
+/* Timeout for civ_poll() in milliseconds */
+#define CIV_POLL_TIMEOUT_MS  500
 
 int civ_open(const char *port, int baud)
 {
@@ -90,7 +89,20 @@ void civ_set_mode(int fd, uint8_t radio_addr, uint8_t mode)
 
 int civ_poll(int fd, uint8_t *resp, int maxlen)
 {
+    fd_set rfds;
+    struct timeval tv;
+
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    tv.tv_sec  = CIV_POLL_TIMEOUT_MS / 1000;
+    tv.tv_usec = (CIV_POLL_TIMEOUT_MS % 1000) * 1000;
+
+    int ready = select(fd + 1, &rfds, NULL, NULL, &tv);
+    if (ready == 0)
+        return -ETIMEDOUT;
+    if (ready < 0)
+        return -errno;
+
     HANDLE h = (HANDLE)(intptr_t)fd;
-    int n = ReadCOMBlock(h, (char *)resp, maxlen);
-    return n;
+    return ReadCOMBlock(h, (char *)resp, maxlen);
 }

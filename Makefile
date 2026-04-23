@@ -65,7 +65,7 @@ src/%.o: src/%.c
 
 -include $(OBJS:.o=.d)
 
-TEST_BINS = tests/test_tun
+TEST_BINS = tests/test_tun tests/test_civ
 
 clean:
 	rm -f ardop-ip $(TEST_BINS) $(OBJS) $(OBJS:.o=.d) tests/*.o tests/*.d
@@ -74,7 +74,11 @@ clean:
 test_tun: tests/test_tun
 	sudo tests/test_tun
 
-UNITY_OBJS = tests/unity.o
+UNITY_OBJS    = tests/unity.o
+TEST_STUB_OBJ = tests/ardopc_test_stubs.o
+
+tests/ardopc_test_stubs.o: tests/ardopc_test_stubs.c
+	$(CC) $(CFLAGS) -MMD -c $< -o $@
 
 tests/unity.o: tests/unity.c tests/unity.h tests/unity_internals.h
 	$(CC) $(CFLAGS) -MMD -c $< -o $@
@@ -82,5 +86,12 @@ tests/unity.o: tests/unity.c tests/unity.h tests/unity_internals.h
 tests/test_tun: tests/test_tun.c src/tun_interface.o $(UNITY_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
 
-# ── Phase 3+: placeholder targets added as tests are written ─────────────
-test: test_tun
+# ── Phase 3: CI-V unit tests ──────────────────────────────────────────────
+test_civ: tests/test_civ
+	tests/test_civ
+
+tests/test_civ: tests/test_civ.c src/civ_control.o $(ARDOPC)/LinSerial.o \
+                $(UNITY_OBJS) $(TEST_STUB_OBJ)
+	$(CC) $(CFLAGS) $^ -lutil -o $@
+
+test: test_tun test_civ
