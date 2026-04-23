@@ -70,6 +70,7 @@ For Comparison 16QAM.2500.100
 #endif
 
 #include "ARDOPC.h"
+#include "qam32_tables.h"  /* Phase 6.3b: cross-32QAM constellation + labeling */
 
 #pragma warning(disable : 4244)		// Code does lots of float to int
 
@@ -212,6 +213,24 @@ int Demod1CarOFDMChar(int Start, int Carrier, int intNumOfSymbols);
 VOID Decode1CarPSK(int Carrier, BOOL OFDM);
 int CorrectRawDataWithRS(UCHAR * bytRawData, UCHAR * bytCorrectedData, int intDataLen, int intRSLen, int bytFrameType, int Carrier);
 UCHAR GetSym8PSK(int intDataPtr, int k, int intCar, UCHAR * bytEncodedBytes, int intDataBytesPerCar);
+/* Phase 6.3b: QAM32 is 5 bits/symbol, packed 5 bytes = 40 bits = 8 symbols.
+ * k is the symbol index 0..7 within the 5-byte group.  Returns 0..31. */
+static inline UCHAR GetSym32QAM(int intDataPtr, int k, int intCar,
+                                UCHAR *bytEncodedBytes, int intDataBytesPerCar)
+{
+    int base = intDataPtr + intCar * intDataBytesPerCar;
+    /* Assemble 40 bits (big-endian) into a uint64_t.  We shift so that
+     * symbol 0 is the top 5 bits, symbol 7 is the bottom 5 bits. */
+    uint64_t w = 0;
+    w = (w << 8) | bytEncodedBytes[base + 0];
+    w = (w << 8) | bytEncodedBytes[base + 1];
+    w = (w << 8) | bytEncodedBytes[base + 2];
+    w = (w << 8) | bytEncodedBytes[base + 3];
+    w = (w << 8) | bytEncodedBytes[base + 4];
+    int shift = 5 * (7 - k);
+    return (UCHAR)((w >> shift) & 0x1f);
+}
+
 int Track1CarPSK(int floatCarFreq, int PSKMode, BOOL QAM, BOOL OFDM, float dblUnfilteredPhase, BOOL blnInit);
 void SendLeaderAndSYNC(UCHAR * bytEncodedBytes, int intLeaderLen);
 void Flush();
@@ -772,8 +791,10 @@ int EncodeOFDMData(UCHAR bytFrameType, UCHAR * bytDataToSend, int Length, unsign
 	if (intDataLen == 0 || Length == 0 || !blnFrameTypeOK)
 		return 0;
 
-	/* Phase 6.3a: --force-mode pin.  If set, bypass gearshift entirely. */
-	if (ForcedOFDMMode >= 0 && ForcedOFDMMode <= PSK16)
+	/* Phase 6.3a/6.3b: --force-mode pin.  If set, bypass gearshift entirely.
+	 * Accept PSK2..PSK16 (Phase 6.3a) and QAM32 (Phase 6.3b encoder-only;
+	 * decoder lands in Phase 6.3c). */
+	if (ForcedOFDMMode >= 0 && ForcedOFDMMode <= QAM32)
 		OFDMMode = ForcedOFDMMode;
 
 	GetOFDMFrameInfo(OFDMMode, &intDataLen, &intRSLen, &Dummy, &Dummy);
@@ -1706,6 +1727,17 @@ void ModOFDMDataAndPlay(unsigned char * bytEncodedBytes, int Len, int intLeaderL
 		QAM = 1;
 		break;
 
+	case QAM32:
+
+		/* Phase 6.3b: 5 bits/symbol, 8 symbols span 5 bytes.  The outer
+		 * j-loop still counts bytes; inside, k=0..7 iterates symbols
+		 * within the 5-byte group.  At the end of k-loop we advance
+		 * intDataPtr by 5 and skip 4 extra j steps (see after the
+		 * inner loop). */
+		s = 8;
+		QAM = 1;
+		break;
+
 	default:
 
 		WriteDebugLog(LOGCRIT, "Undefined OFDM Mode %d", OFDMMode);
@@ -1850,13 +1882,25 @@ PktLoopBack:		// Reenter here to send rest of variable length packet frame
 						bytSym = (bytEncodedBytes[intDataPtr + i * intDataBytesPerCar] >> (4 * (1 - k))) & 15;
 						bytSymToSend = ((bytLastSym[intCarIndex] + bytSym) & 15);  // Values 0-3
 					}
+					else if (OFDMMode == QAM32)
+					{
+						/* Phase 6.3b: 5-bit label extracted from a 5-byte
+						 * window.  Absolute (not differential) — the
+						 * reference symbol sent before data gives the RX
+						 * a coherent phase lock, so bytLastSym tracking
+						 * is not needed for demodulation.  We still store
+						 * it (below) for future decoder debugging. */
+						bytSymToSend = GetSym32QAM(intDataPtr, k, i,
+						                           bytEncodedBytes,
+						                           intDataBytesPerCar);
+					}
 					else
 					{
 						// 16QAM
-						
+
 						bytSym = (bytEncodedBytes[intDataPtr + i * intDataBytesPerCar] >> (4 * (1 - k))) & 15;
 						bytSymToSend = ((bytLastSym[intCarIndex] & 7) + (bytSym & 7) & 7); // Compute the differential phase to send
-						bytSymToSend = bytSymToSend | (bytSym & 8); // add in the amplitude bit directly from symbol 
+						bytSymToSend = bytSymToSend | (bytSym & 8); // add in the amplitude bit directly from symbol
 					}
 					p = 24;
 					memset(OFDMSamples, 0, sizeof(OFDMSamples));
@@ -1882,7 +1926,41 @@ PktLoopBack:		// Reenter here to send rest of variable length packet frame
 							if (bytSymToSend < 8) // This uses the symmetry of the symbols to reduce the table size by a factor of 2
 								OFDMSamples[p++] += intOFDMTemplate[intCarIndex][bytSymToSend][n]; //  double the symbol value during template lookup for 4PSK. (skips over odd PSK 8 symbols)
 							else
-								OFDMSamples[p++] -= intOFDMTemplate[intCarIndex][(bytSymToSend - 8)][n]; // subtract 2 from the symbol value before doubling and subtract value of table 
+								OFDMSamples[p++] -= intOFDMTemplate[intCarIndex][(bytSymToSend - 8)][n]; // subtract 2 from the symbol value before doubling and subtract value of table
+						}
+						else if (OFDMMode == QAM32)
+						{
+							/* Phase 6.3b: synthesize s[n] = scale * (I*cos(wt) + Q*sin(wt))
+							 * using intOFDMTemplate basis:
+							 *   template[j=0] = intAmp * sin(w*n)       (Q-axis basis)
+							 *   template[j=4] = intAmp * sin(pi/2 + w*n)
+							 *                 = intAmp * cos(w*n)       (I-axis basis)
+							 *
+							 * The constellation is stored in qam32_constellation[]
+							 * normalized to UNIT AVERAGE POWER (sum|p|^2/32 = 1).
+							 * We additionally rescale by sqrt(20/50) so the MAX
+							 * point (|I|=|Q|=5 side-edge magnitude sqrt(26)/sqrt(20)
+							 * ... actually max |p|^2 = 34/20 = 1.7 for (3,5) points)
+							 * keeps the sample envelope within the int16 range
+							 * that QAM16's outer-circle points already use.
+							 *
+							 * Empirical max |point|^2 on the cross:
+							 *   (1,5): 26/20 = 1.30
+							 *   (3,5): 34/20 = 1.70  <- MAX
+							 *   (5,3): 34/20 = 1.70  <- MAX (same by symmetry)
+							 * So peak |point| = sqrt(34/20) ~= 1.304.
+							 * Divide by that to get max-normalized coords: the
+							 * corresponding scale factor is 1/1.304 ~= 0.767.
+							 * Apply it to the raw template-domain sum. */
+							static const float QAM32_TX_SCALE = 0.767f;
+							float fi = qam32_constellation[0].i, fq = qam32_constellation[0].q;
+							qam32_map_symbol_to_iq((uint8_t)(bytSymToSend & 0x1f), &fi, &fq);
+							float sample_f = QAM32_TX_SCALE *
+							    (fi * (float)intOFDMTemplate[intCarIndex][4][n]
+							   + fq * (float)intOFDMTemplate[intCarIndex][0][n]);
+							if      (sample_f >  32767.0f) sample_f =  32767.0f;
+							else if (sample_f < -32768.0f) sample_f = -32768.0f;
+							OFDMSamples[p++] = (short)sample_f;
 						}
 						else
 						{
@@ -1930,6 +2008,12 @@ PktLoopBack:		// Reenter here to send rest of variable length packet frame
 		{
 			intDataPtr += 3;
 			j += 2;				// We've used 3 bytes
+		}
+		else if (OFDMMode == QAM32)
+		{
+			/* Phase 6.3b: consumed 5 bytes = 40 bits = 8 symbols. */
+			intDataPtr += 5;
+			j += 4;
 		}
 		else
 			intDataPtr++;

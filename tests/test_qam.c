@@ -33,11 +33,18 @@
  *      0..7 bucket.
  */
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "unity.h"
+
+/* Phase 6.3b: pull in the real QAM32 constellation + label map.  These are
+ * compiled into the ardop-ip binary too; the test binary links against the
+ * same qam32_tables.o so any drift fails here AND on-air identically. */
+#include "qam32_tables.h"
 
 /* ---- OFDM mode constants mirrored from src/ardopc/ardop2ofdm/ARDOPC.h -- */
 #define PSK2   0
@@ -45,6 +52,7 @@
 #define PSK8   2
 #define QAM16  3
 #define PSK16  4
+#define QAM32  5
 
 /* Phase 6.1c knob — mirrored from ARDOPC.c.  Tests set/reset in setUp. */
 static int FECStrengthNPAR = 20;
@@ -279,6 +287,182 @@ static void test_qam16_phase_bucket_boundaries(void)
     TEST_ASSERT_EQUAL_UINT8(7, qam16_decode_symbol(-393, 0));
 }
 
+/* ==========================================================================
+ * Phase 6.3b: QAM32 constellation tests
+ *
+ * These link against the real src/ardopc/ardop2ofdm/qam32_tables.o — the
+ * same object file the ardop-ip binary uses — so any drift between the
+ * production constellation / labeling and the test expectations is caught
+ * at the test level.
+ * ========================================================================= */
+
+/* Same 5-byte packing the encoder uses in GetSym32QAM (ofdm.c).  The test
+ * duplicates the math rather than linking the full ofdm.o, matching the
+ * test_qam pattern of duplicating small pieces of the TX path. */
+static uint8_t qam32_extract_symbol(const uint8_t *bytes, int k)
+{
+    uint64_t w = 0;
+    for (int i = 0; i < 5; i++) w = (w << 8) | bytes[i];
+    int shift = 5 * (7 - k);
+    return (uint8_t)((w >> shift) & 0x1f);
+}
+
+/* Test 5: every label in 0..31 appears exactly once. */
+static void test_qam32_table_bijective(void)
+{
+    int seen[32] = {0};
+    for (int i = 0; i < 32; i++) {
+        uint8_t label = qam32_constellation[i].label;
+        TEST_ASSERT_TRUE_MESSAGE(label < 32, "label out of 0..31 range");
+        TEST_ASSERT_EQUAL_INT_MESSAGE(0, seen[label],
+                                      "duplicate label in qam32_constellation");
+        seen[label] = 1;
+    }
+    for (int l = 0; l < 32; l++) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, seen[l],
+                                      "missing label in qam32_constellation");
+    }
+}
+
+/* Test 6: exactly 32 points, all on the odd-coordinate grid minus the
+ * 4 corners (+-5, +-5) of the 6x6 grid. */
+static void test_qam32_32_points(void)
+{
+    const float NORM = 1.0f / sqrtf(20.0f);
+    for (int i = 0; i < 32; i++) {
+        float ir = qam32_constellation[i].i / NORM;  /* back to raw coord */
+        float qr = qam32_constellation[i].q / NORM;
+        int Ii = (int)lroundf(ir);
+        int Qi = (int)lroundf(qr);
+        /* I, Q in {-5, -3, -1, 1, 3, 5} */
+        TEST_ASSERT_TRUE_MESSAGE(Ii == -5 || Ii == -3 || Ii == -1 ||
+                                 Ii ==  1 || Ii ==  3 || Ii ==  5,
+                                 "I coordinate not in {+-1, +-3, +-5}");
+        TEST_ASSERT_TRUE_MESSAGE(Qi == -5 || Qi == -3 || Qi == -1 ||
+                                 Qi ==  1 || Qi ==  3 || Qi ==  5,
+                                 "Q coordinate not in {+-1, +-3, +-5}");
+        /* No corner points. */
+        TEST_ASSERT_FALSE_MESSAGE(abs(Ii) == 5 && abs(Qi) == 5,
+                                  "cross-32QAM must not contain corner (+-5,+-5)");
+    }
+}
+
+/* Test 7: unit average power. */
+static void test_qam32_unit_power(void)
+{
+    double power = 0.0;
+    for (int i = 0; i < 32; i++) {
+        double I = qam32_constellation[i].i;
+        double Q = qam32_constellation[i].q;
+        power += I * I + Q * Q;
+    }
+    double avg = power / 32.0;
+    /* Unity may or may not include double asserts depending on build flags;
+     * do the comparison by hand for portability. */
+    double err = (avg > 1.0) ? (avg - 1.0) : (1.0 - avg);
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "average power %.9f must be within 1e-6 of 1.0", avg);
+    TEST_ASSERT_TRUE_MESSAGE(err < 1e-6, msg);
+}
+
+/* Test 8: quasi-Gray quality — average Hamming distance between
+ * Euclidean-adjacent points must be at most 1.5.  Two points are
+ * Euclidean-adjacent iff their distance (in raw grid units) is exactly 2
+ * (i.e. they differ by +-2 in exactly one of I or Q). */
+static void test_qam32_gray_quality(void)
+{
+    const float NORM = 1.0f / sqrtf(20.0f);
+    /* Round to raw coords once. */
+    int Ii[32], Qi[32];
+    uint8_t Li[32];
+    for (int i = 0; i < 32; i++) {
+        Ii[i] = (int)lroundf(qam32_constellation[i].i / NORM);
+        Qi[i] = (int)lroundf(qam32_constellation[i].q / NORM);
+        Li[i] = qam32_constellation[i].label;
+    }
+    long total_hamming = 0;
+    int  edge_count    = 0;
+    for (int a = 0; a < 32; a++) {
+        for (int b = a + 1; b < 32; b++) {
+            int dI = Ii[a] - Ii[b];
+            int dQ = Qi[a] - Qi[b];
+            int adjacent =
+                (dI == 0 && (dQ == 2 || dQ == -2)) ||
+                (dQ == 0 && (dI == 2 || dI == -2));
+            if (!adjacent) continue;
+            uint8_t x = (uint8_t)(Li[a] ^ Li[b]);
+            int h = 0;
+            while (x) { h += (x & 1); x >>= 1; }
+            total_hamming += h;
+            edge_count++;
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(edge_count > 0, "no adjacent edges found");
+    double avg = (double)total_hamming / (double)edge_count;
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "avg Hamming %.3f over %d edges must be <= 1.5", avg, edge_count);
+    TEST_ASSERT_TRUE_MESSAGE(avg <= 1.5, msg);
+    TEST_ASSERT_TRUE_MESSAGE(avg >= 1.0, "avg Hamming < 1.0 is impossible here");
+}
+
+/* Test 9: symbol packing.  Feed a known 5-byte input and verify the 8
+ * symbols come out in MSB-first big-endian order. */
+static void test_qam32_symbol_packing(void)
+{
+    /* Hand-built input: bit pattern 11111 00000 11111 00000 11111 00000 11111 00000
+     * = 0xF8 0x3E 0x0F 0x83 0xE0
+     *
+     * Walk:
+     *   byte0=0xF8=11111000  byte1=0x3E=00111110  byte2=0x0F=00001111
+     *   byte3=0x83=10000011  byte4=0xE0=11100000
+     *   concat=11111000 00111110 00001111 10000011 11100000
+     *   sym 0 (bits 39..35) = 11111 = 31
+     *   sym 1 (bits 34..30) = 00000 = 0
+     *   sym 2 (bits 29..25) = 11111 = 31
+     *   sym 3 (bits 24..20) = 00000 = 0
+     *   sym 4 (bits 19..15) = 11111 = 31
+     *   sym 5 (bits 14..10) = 00000 = 0
+     *   sym 6 (bits  9..5)  = 11111 = 31
+     *   sym 7 (bits  4..0)  = 00000 = 0
+     */
+    const uint8_t input[5]    = { 0xF8, 0x3E, 0x0F, 0x83, 0xE0 };
+    const uint8_t expected[8] = { 31, 0, 31, 0, 31, 0, 31, 0 };
+    for (int k = 0; k < 8; k++) {
+        TEST_ASSERT_EQUAL_UINT8(expected[k], qam32_extract_symbol(input, k));
+    }
+
+    /* Second vector: 0x00 0x84 0x21 0x08 0x42
+     * = 00000000 10000100 00100001 00001000 01000010
+     * sym 0  = 00000 = 0
+     * sym 1  = 00010 = 2
+     * sym 2  = 00010 = 2
+     * sym 3  = 00010 = 2
+     * sym 4  = 00010 = 2
+     * sym 5  = 00010 = 2
+     * sym 6  = 00010 = 2
+     * sym 7  = 00010 = 2
+     */
+    const uint8_t input2[5]    = { 0x00, 0x84, 0x21, 0x08, 0x42 };
+    const uint8_t expected2[8] = { 0, 2, 2, 2, 2, 2, 2, 2 };
+    for (int k = 0; k < 8; k++) {
+        TEST_ASSERT_EQUAL_UINT8(expected2[k], qam32_extract_symbol(input2, k));
+    }
+}
+
+/* Test 10: label->IQ round-trip via qam32_map_symbol_to_iq. */
+static void test_qam32_map_symbol_to_iq(void)
+{
+    for (int i = 0; i < 32; i++) {
+        uint8_t label = qam32_constellation[i].label;
+        float I = 0.0f, Q = 0.0f;
+        qam32_map_symbol_to_iq(label, &I, &Q);
+        TEST_ASSERT_EQUAL_FLOAT(qam32_constellation[i].i, I);
+        TEST_ASSERT_EQUAL_FLOAT(qam32_constellation[i].q, Q);
+    }
+}
+
 /* -- main --------------------------------------------------------------- */
 int main(void)
 {
@@ -287,5 +471,12 @@ int main(void)
     RUN_TEST(test_qam16_npar_split_invariant);
     RUN_TEST(test_qam16_roundtrip_zero_noise);
     RUN_TEST(test_qam16_phase_bucket_boundaries);
+    /* Phase 6.3b */
+    RUN_TEST(test_qam32_table_bijective);
+    RUN_TEST(test_qam32_32_points);
+    RUN_TEST(test_qam32_unit_power);
+    RUN_TEST(test_qam32_gray_quality);
+    RUN_TEST(test_qam32_symbol_packing);
+    RUN_TEST(test_qam32_map_symbol_to_iq);
     return UNITY_END();
 }

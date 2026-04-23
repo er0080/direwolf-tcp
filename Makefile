@@ -31,6 +31,7 @@ ARDOPC_SRCS = \
 	$(ARDOPC)/Modulate.c \
 	$(ARDOPC)/ardopSampleArrays.c \
 	$(ARDOPC)/ofdm.c \
+	$(ARDOPC)/qam32_tables.c \
 	$(ARDOPC)/rs.c \
 	$(ARDOPC)/berlekamp.c \
 	$(ARDOPC)/galois.c \
@@ -148,9 +149,10 @@ tests/test_varsize: tests/test_varsize.c $(UNITY_OBJS)
 test_qam: tests/test_qam
 	tests/test_qam
 
-# Standalone — duplicates the small QAM16 constellation math, same pattern
-# as test_varsize.  No ARDOPC.o link.
-tests/test_qam: tests/test_qam.c $(UNITY_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@
+# Phase 6.3a: QAM16 tests duplicate small encoder math (no ARDOPC.o link).
+# Phase 6.3b: link real qam32_tables.o so constellation drift between the
+# ardop-ip binary and the tests is caught automatically.
+tests/test_qam: tests/test_qam.c $(ARDOPC)/qam32_tables.o $(UNITY_OBJS)
+	$(CC) $(CFLAGS) $^ -lm -o $@
 
 test: test_tun test_civ test_fec test_arq test_tun_fec test_varsize test_qam

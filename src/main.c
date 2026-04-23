@@ -128,7 +128,11 @@ static void usage(const char *prog)
         "                    Phase 6.2: encoder sizes carriers to payload.\n"
         "                    Defaults preserve Phase 6.1 on-air behaviour.\n"
         "  --force-mode M    Pin OFDM mode (bypass gearshift).  One of:\n"
-        "                    PSK2|PSK4|PSK8|QAM16|PSK16.  Default: unset.\n"
+        "                    PSK2|PSK4|PSK8|QAM16|PSK16|QAM32.  Default: unset.\n"
+        "                    NOTE: QAM32 is encoder-only (Phase 6.3b); the\n"
+        "                    matching decoder lands in Phase 6.3c.  Forcing\n"
+        "                    QAM32 will transmit valid frames but the RX side\n"
+        "                    will not yet decode them.\n"
         "                    Phase 6.3a: for bench/RF testing only.\n"
         "\n"
         "CI-V radio control:\n"
@@ -209,9 +213,10 @@ int main(int argc, char *argv[])
             else if (strcmp(optarg, "PSK8")  == 0) force_mode = 2;
             else if (strcmp(optarg, "QAM16") == 0) force_mode = 3;
             else if (strcmp(optarg, "PSK16") == 0) force_mode = 4;
+            else if (strcmp(optarg, "QAM32") == 0) force_mode = 5; /* Phase 6.3b: encoder-only */
             else {
                 fprintf(stderr, "ardop-ip: unknown --force-mode '%s' "
-                                "(use PSK2|PSK4|PSK8|QAM16|PSK16)\n", optarg);
+                                "(use PSK2|PSK4|PSK8|QAM16|PSK16|QAM32)\n", optarg);
                 usage(argv[0]); return 1;
             }
             break;
@@ -299,8 +304,8 @@ int main(int argc, char *argv[])
     const char *strength =
         (fec_npar == 10) ? "light"  :
         (fec_npar == 40) ? "strong" : "normal";
-    static const char *ofdm_mode_names[5] = { "PSK2","PSK4","PSK8","QAM16","PSK16" };
-    const char *forced = (force_mode >= 0 && force_mode <= 4)
+    static const char *ofdm_mode_names[6] = { "PSK2","PSK4","PSK8","QAM16","PSK16","QAM32" };
+    const char *forced = (force_mode >= 0 && force_mode <= 5)
                          ? ofdm_mode_names[force_mode] : "off";
     printf("ardop-ip: %s  %s  FEC %s  strength %s (NPAR=%d) "
            "carriers=[%d..%d]  force-mode=%s\n",
