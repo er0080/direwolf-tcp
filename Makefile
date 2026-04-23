@@ -9,10 +9,10 @@
 CC      = gcc
 
 # Flags for our new source files (strict)
-CFLAGS  = -DLINBPQ -g -Wall -I src -I src/ardopc/ardop2ofdm -I tests
+CFLAGS  = -DLINBPQ -DARDOP_IP -g -Wall -I src -I src/ardopc/ardop2ofdm -I tests
 
 # Flags for upstream ardopc submodule — warnings suppressed (not our code)
-ARDOPC_CFLAGS = -DLINBPQ -g -w -I src -I src/ardopc/ardop2ofdm
+ARDOPC_CFLAGS = -DLINBPQ -DARDOP_IP -g -w -I src -I src/ardopc/ardop2ofdm
 
 ARDOPC  = src/ardopc/ardop2ofdm
 
@@ -41,7 +41,9 @@ ARDOPC_SRCS = \
 NEW_SRCS = \
 	src/stubs.c \
 	src/tun_interface.c \
-	src/civ_control.c
+	src/civ_control.c \
+	src/tun_ardopc.c \
+	src/main.c
 
 SRCS   = $(ARDOPC_SRCS) $(NEW_SRCS)
 OBJS   = $(SRCS:.c=.o)
@@ -65,7 +67,7 @@ src/%.o: src/%.c
 
 -include $(OBJS:.o=.d)
 
-TEST_BINS = tests/test_tun tests/test_civ
+TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq
 
 clean:
 	rm -f ardop-ip $(TEST_BINS) $(OBJS) $(OBJS:.o=.d) tests/*.o tests/*.d
@@ -94,4 +96,29 @@ tests/test_civ: tests/test_civ.c src/civ_control.o $(ARDOPC)/LinSerial.o \
                 $(UNITY_OBJS) $(TEST_STUB_OBJ)
 	$(CC) $(CFLAGS) $^ -lutil -o $@
 
-test: test_tun test_civ
+# ── Phase 3: FEC unit tests ───────────────────────────────────────────────
+test_fec: tests/test_fec
+	tests/test_fec
+
+# FEC test only needs the RSCODE library objects (rs, berlekamp, galois)
+# plus unity.  No ardopc globals needed.
+FEC_RS_OBJS = $(ARDOPC)/rs.o $(ARDOPC)/berlekamp.o $(ARDOPC)/galois.o
+
+tests/test_fec: tests/test_fec.c $(FEC_RS_OBJS) $(UNITY_OBJS) $(TEST_STUB_OBJ)
+	$(CC) $(CFLAGS) $^ -o $@
+
+# ── Phase 3: ARQ unit tests ───────────────────────────────────────────────
+test_arq: tests/test_arq
+	tests/test_arq
+
+ARQ_STUB_OBJ = tests/arq_test_stubs.o
+
+tests/arq_test_stubs.o: tests/arq_test_stubs.c
+	$(CC) $(CFLAGS) -MMD -c $< -o $@
+
+# ARQ test links ARQ.o + the comprehensive arq_test_stubs + ardopc_test_stubs + unity
+tests/test_arq: tests/test_arq.c $(ARDOPC)/ARQ.o $(UNITY_OBJS) \
+                $(ARQ_STUB_OBJ) $(TEST_STUB_OBJ)
+	$(CC) $(CFLAGS) $^ -o $@
+
+test: test_tun test_civ test_fec test_arq

@@ -4,3 +4,12 @@ tncattach/*.o
 ardop-ip
 *.o
 *.d
+__pycache__/
+# ardopc runtime logs written to cwd
+/ARDOPDebug*.log
+/ARDOPSession*.log
+# test binaries built by `make test`
+tests/test_tun
+tests/test_fec
+tests/test_civ
+tests/test_arq

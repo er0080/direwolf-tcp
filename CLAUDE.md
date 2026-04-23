@@ -87,3 +87,56 @@ tail -f logs/dw-b.log                           # direwolf B output
 - **RF ping interval must exceed RTT**: At 2400 baud QPSK with TXDELAY 20 + TXTAIL 10, frame air time is ~860 ms and RTT is ~1700 ms. Using `ping -i 1` (default) causes the transmit queue to grow and produces back-to-back collisions. Always use `ping -i 3` or longer when testing the RF link.
 - **KISS has no flow control**: tncattach can feed frames faster than the radio can transmit. For sustained traffic, rate-limit with `tc tbf`. TCP self-limits via congestion control; ICMP does not.
 - **2400 QPSK requires matched SSB filter bandwidth**: Both radios must have TX bandwidth wide enough (~2.4 kHz) and matched. A narrower filter on the transmitting radio will cause systematic FEC corrections on every received frame even at correct audio levels.
+
+## ardop-ip Branch (ARDOP-tcpip)
+
+Second-generation implementation: a single binary (`ardop-ip`) forked from
+`ardopc` that owns its own TUN interface and uses ARDOP's OFDM PHY + ARQ
+directly instead of going through KISS/Direwolf. Files live under `src/` and
+the ARDOP sources are a submodule at `src/ardopc/`. Build with `make ardop-ip`.
+
+### ardop-ip — RF test scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/rf-ardop-ip-smoke.sh` | Quick 3-ping link check (~4 min) |
+| `scripts/rf-ardop-ip-baseline.sh` | Fail-fast single-shot suite: ping reliability, TCP connect, UDP 1024 B, MTU 1432 (~10 min) |
+| `scripts/rf-ardop-ip-stress.sh` | 5-min ping soak + post-soak MTU check (~7 min) |
+
+Config: `config/ardop-ip-rf.conf`. All three scripts are sudo + namespace-based
+and require `/dev/ic_705_a`, `/dev/ic_7300` udev aliases plus `CODEC_705` /
+`CODEC_7300` ALSA cards. Each test is single-shot — on failure the suite exits
+immediately so the bug can be investigated. Never re-run with retry loops.
+
+### ardop-ip — Critical constraints (RF only)
+
+- **CI-V port raises DTR on open**: Linux's default tty open asserts DTR (and
+  RTS). The IC-705 / IC-7300 "USB Send" menus map DTR → PTT, so opening the
+  CI-V port would key the radio for the entire session until close. Fixed in
+  `src/civ_control.c::civ_open()` with `TIOCMBIC` right after `OpenCOMPort`.
+- **CI-V PTT-off on exit**: `ardop-ip` installs a SIGINT/SIGTERM handler that
+  writes the CI-V PTT-off frame synchronously (via `write()`, which is
+  async-signal-safe), plus an `atexit()` hook. The cleanup in each test script
+  also sends a direct CI-V rescue frame after SIGKILL. A stuck-key radio is
+  always a bug — if it happens, something bypassed both paths.
+- **TUN poll ordering matters**: In `ardopmain()` the loop is
+  `TUNHostPoll → PollReceivedSamples → … → TUNHostPoll`. The pre-poll is
+  load-bearing: without it, the IRS sees a stale `bytDataToSendLength=0`
+  when processing a received IDLE, ACKs instead of BREAKing, and the kernel's
+  just-queued reply (SYN-ACK, ICMP reply) sits in the TUN buffer indefinitely.
+  A redundant call at the top of the IDLE handler in `ARQ.c` is belt and
+  suspenders.
+- **Fail-fast test philosophy**: Test scripts use `fail() { echo FAIL; exit 1; }`
+  — any test that misses its acceptance criterion stops the suite. Previous
+  `return "$rc"` in EXIT traps occasionally turned PASS into exit-1; all three
+  scripts now use `exit "$rc"` in the cleanup trap.
+- **UDP for throughput tests**: TCP's `tcp_syn_retries`-based abort timer
+  (~127 s) is shorter than the worst-case ARDOP RTT on multi-frame transfers,
+  so sustained TCP bulk transfers abort mid-handshake. UDP avoids this; use
+  TCP for control-plane tests only (e.g. single `nc -zv`).
+- **Goodput ceiling on 14.103 MHz with default gearshift**: ~125 bps raw during
+  active transfer, ~40 bps end-to-end including ARQ establishment. PSK16 +
+  single-frame ARQ window. Higher throughput requires ARDOP protocol work
+  (ARQ window > 1, 16QAM/32QAM modes) — see Phase 5b in the plan.
+- **Radio setup**: Both radios on 14.103 MHz USB-D, matched SSB TX filter ≥
+  2.4 kHz, TX power ≤ 5 W for same-building testing.

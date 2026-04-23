@@ -13,7 +13,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
+#include <termios.h>
 
 #include "ardopc/ardop2ofdm/ARDOPC.h"
 #include "civ_control.h"
@@ -35,8 +37,17 @@ extern int    ReadCOMBlock(HANDLE fd, char *Block, int MaxLength);
 int civ_open(const char *port, int baud)
 {
     HANDLE fd = OpenCOMPort((void *)port, baud,
-                            /*SetDTR=*/1, /*SetRTS=*/0,
+                            /*SetDTR=*/0, /*SetRTS=*/0,
                             /*Quiet=*/0,  /*Stopbits=*/0);
+    if ((int)(intptr_t)fd <= 0)
+        return (int)(intptr_t)fd;
+
+    /* Icom radios with "USB Send" menu set to DTR/RTS treat those lines as
+     * PTT.  Linux asserts both high when a tty is opened — clear them so the
+     * radio is not keyed for the lifetime of this fd.  We key via CI-V only. */
+    int mctl = TIOCM_DTR | TIOCM_RTS;
+    ioctl((int)(intptr_t)fd, TIOCMBIC, &mctl);
+
     return (int)(intptr_t)fd;
 }
 

@@ -14,6 +14,10 @@ char HostPort[80]  = "";
 HANDLE hCATDevice  = 0;
 HANDLE hPTTDevice  = 0;
 
+/* RS globals normally defined in ARDOPC.c */
+int NPAR      = -1;
+int MaxErrors = 0;
+
 void Debugprintf(const char *fmt, ...)
 {
     va_list ap;

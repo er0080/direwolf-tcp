@@ -1,0 +1,179 @@
+diff --git a/ardop2ofdm/ALSASound.c b/ardop2ofdm/ALSASound.c
+index 5347a3c..bc353b8 100644
+--- a/ardop2ofdm/ALSASound.c
++++ b/ardop2ofdm/ALSASound.c
+@@ -308,6 +308,7 @@ static void sigint_handler(int sig)
+ char * PortString = NULL;
+ 
+ 
++#ifndef ARDOP_IP
+ void main(int argc, char * argv[])
+ {
+ 	struct timespec tp;
+@@ -473,6 +474,7 @@ void main(int argc, char * argv[])
+ 		unlink (HostPort);
+ 
+ }
++#endif /* ARDOP_IP */
+ 
+ void txSleep(int mS)
+ {
+diff --git a/ardop2ofdm/ARDOPC.c b/ardop2ofdm/ARDOPC.c
+index 0181556..9089d15 100644
+--- a/ardop2ofdm/ARDOPC.c
++++ b/ardop2ofdm/ARDOPC.c
+@@ -30,6 +30,7 @@ BOOL SerialHostInit();
+ BOOL KISSInit();
+ void SerialHostPoll();
+ void TCPHostPoll();
++void TUNHostPoll();
+ BOOL MainPoll();
+ VOID PacketStartTX();
+ void PlatformSleep(int mS);
+@@ -686,6 +687,7 @@ void ardopmain()
+ 
+ 	InitSound();
+ 
++#ifndef ARDOP_IP
+ 	if (SerialMode)
+ 		SerialHostInit();
+ 	else
+@@ -698,6 +700,7 @@ void ardopmain()
+ 		afskInit();
+ #endif
+ 	}
++#endif /* ARDOP_IP */
+ //	while (1)
+ //		testRS();
+ 
+@@ -707,12 +710,24 @@ void ardopmain()
+ 
+ 	while(!blnClosing)
+ 	{
++#ifdef ARDOP_IP
++		/* Pre-poll TUN so bytDataToSendLength is up-to-date before any
++		 * received ARQ frame is processed.  Without this, AutoBreak's
++		 * `bytDataToSendLength > 0` check sees a stale zero when the kernel
++		 * has just queued a reply (e.g. SYN-ACK) in the TUN buffer since
++		 * the previous loop tick — the IRS then ACKs instead of breaking. */
++		TUNHostPoll();
++#endif
+ 		PollReceivedSamples();
+-		CheckTimers();	
++		CheckTimers();
++#ifdef ARDOP_IP
++		TUNHostPoll();
++#else
+ 		if (SerialMode)
+ 			SerialHostPoll();
+ 		else
+ 			TCPHostPoll();
++#endif
+ 		MainPoll();
+ #ifdef Teensy
+ 		PlatformSleep(0);
+@@ -721,12 +736,14 @@ void ardopmain()
+ #endif
+ 	}
+ 
++#ifndef ARDOP_IP
+ 	if (!SerialMode)
+ 	{
+ 		closesocket(TCPControlSock);
+ 		closesocket(TCPDataSock);
+ 		closesocket(PktSock);
+ 	}
++#endif
+ 	return;
+ }
+ 
+diff --git a/ardop2ofdm/ARQ.c b/ardop2ofdm/ARQ.c
+index da00a36..c9566ee 100644
+--- a/ardop2ofdm/ARQ.c
++++ b/ardop2ofdm/ARQ.c
+@@ -1725,15 +1725,27 @@ void ProcessRcvdARQFrame(UCHAR intFrameType, UCHAR * bytData, int DataLen, BOOL
+ 				return;
+ 			}
+ 
+-			if (blnFrameDecodedOK && intFrameType == IDLEFRAME) //  IF IDLE received from ISS 
++			if (blnFrameDecodedOK && intFrameType == IDLEFRAME) //  IF IDLE received from ISS
+ 			{
+ 				WriteDebugLog(LOGDEBUG, "[ARDOPprotocol.ProcessRcvdARQFrame]  IDLE received in ProtocolState %s substate %s", ARDOPStates[ProtocolState], ARQSubStates[ARQState]);
+ 				{
+ 					blnEnbARQRpt = FALSE; // setup for no repeats
+-				
++
+ 					if (CheckForDisconnect())
+ 						return;
+ 
++#ifdef ARDOP_IP
++					/* Refresh bytDataToSendLength from the TUN buffer right
++					 * before deciding BREAK vs ACK.  The kernel may have
++					 * queued a reply (e.g. SYN-ACK, ICMP echo reply) on the
++					 * TUN since the last main-loop tick; without this call,
++					 * the check below sees a stale zero and the IRS ACKs
++					 * instead of breaking — the pending reply then sits in
++					 * the TUN buffer indefinitely because the IRS needs
++					 * ISS's cooperation to turn around the half-duplex link. */
++					TUNHostPoll();
++#endif
++
+ 					if ((AutoBreak && bytDataToSendLength > 0) || blnBREAKCmd)
+ 					{
+ 						// keep BREAK Repeats fairly short (preliminary value 1 - 3 seconds)
+@@ -1773,12 +1785,12 @@ void ProcessRcvdARQFrame(UCHAR intFrameType, UCHAR * bytData, int DataLen, BOOL
+ 
+ 				if (ARQState == IRSData && blnBREAKCmd && intFrameType != bytLastACKedDataFrameType)
+ 				{
+-					// if BREAK Command and first time the new frame type is seen then 
+-					// Handles Protocol Rule 3.4 
+-					// This means IRS wishes to BREAK so start BREAK repeats and go to protocol state IRStoISS 
+-					// This implements the  important IRS>ISS changeover...may have to adjust parameters here for reliability 
++					// if BREAK Command and first time the new frame type is seen then
++					// Handles Protocol Rule 3.4
++					// This means IRS wishes to BREAK so start BREAK repeats and go to protocol state IRStoISS
++					// This implements the  important IRS>ISS changeover...may have to adjust parameters here for reliability
+ 					// The incorporation of intFrameType <> objMain.bytLastACKedDataFrameType insures only processing a BREAK on a frame
+-					// before it is ACKed to insure the ISS will correctly capture the frame being sent in its purge buffer. 
++					// before it is ACKed to insure the ISS will correctly capture the frame being sent in its purge buffer.
+ 
+ 					dttTimeoutTrip = Now;
+ 					blnBREAKCmd = FALSE;
+diff --git a/ardop2ofdm/HostInterface.c b/ardop2ofdm/HostInterface.c
+index 3fa59de..1cb0073 100644
+--- a/ardop2ofdm/HostInterface.c
++++ b/ardop2ofdm/HostInterface.c
+@@ -6,6 +6,10 @@
+ BOOL blnHostRDY = FALSE;
+ extern int intFECFramesSent;
+ 
++#ifdef ARDOP_IP
++void TUNDeliverToHost(UCHAR *data, const char *tag, int len);
++#endif
++
+ void SendData();
+ BOOL CheckForDisconnect();
+ int ComputeInterFrameInterval(int intRequestedIntervalMS);
+@@ -1636,17 +1640,21 @@ void AddTagToDataAndSendToHost(UCHAR * bytData, char * strTag, int Len)
+ {
+ 	if (CommandTrace) WriteDebugLog(LOGINFO, "[AddTagToDataAndSendToHost] bytes=%d Tag %s", Len, strTag);
+ 
++#ifdef ARDOP_IP
++	TUNDeliverToHost(bytData, strTag, Len);
++#else
+ 	if (SerialMode)
+ 		SCSAddTagToDataAndSendToHost(bytData, strTag, Len);
+ 	else
+ 		TCPAddTagToDataAndSendToHost(bytData, strTag, Len);
++#endif
+ 
+ 	if (Len > 80)
+ 		Len = 79;
+ 
+ 	bytData[Len] = 0;
+ 
+-	strcpy(strLastStringPassedToHost, bytData); 
++	strcpy(strLastStringPassedToHost, bytData);
+ }
+ 
+ #ifdef TEENSY
