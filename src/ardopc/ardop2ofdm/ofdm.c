@@ -176,6 +176,10 @@ extern short intFilteredMixedSamples[];	// Get Frame Type need 2400 and we may a
 extern int intFilteredMixedSamplesLength;
 extern int MaxFilteredMixedSamplesLength;
 extern short intCarMagThreshold[MAXCAR];
+/* Phase 6.3c: saved reference-symbol state for QAM32 absolute-coherent
+ * demodulation.  Populated by InitDemodOFDM().  See SoundInput.c. */
+extern short intPSKRefPhase[MAXCAR];
+extern float fltCarRefMag[MAXCAR];
 extern short ** intMags;
 extern short ** intPhases;
 extern float floatCarFreq;			//(was int)	// Are these the same ??
@@ -1130,6 +1134,16 @@ VOID InitDemodOFDM()
 		intPSKPhase_1[i] = intPSKPhase_0[i];
 				
 		intCarMagThreshold[i] += sqrtf(powf(dblReal, 2) + powf(dblImag, 2));
+
+		/* Phase 6.3c: snapshot the reference-symbol magnitude (averaged over
+		 * the reference + 3 mode-bit symbols — all transmitted at full
+		 * template amplitude) and the absolute phase of the third mode-bit
+		 * symbol, which is exactly the phase that precedes the first data
+		 * symbol.  Both anchors are needed by Decode1CarOFDM_QAM32 to recover
+		 * absolute (I, Q) from the differential intPhases[] stream. */
+		fltCarRefMag[i] = intCarMagThreshold[i] / 4.0f;
+		intPSKRefPhase[i] = intPSKPhase_1[i];
+
 		intCarMagThreshold[i] *= 0.75f;
 
 		// We have accumulated 4 values so divide by 4
@@ -1304,6 +1318,175 @@ VOID Decode1CarOFDM(int Carrier)
 	}
 }
 
+/* =========================================================================
+ * Phase 6.3c — QAM32 demapper
+ *
+ * The Phase 6.3b encoder packs 5 bytes of data into 8 cross-32QAM symbols
+ * per carrier (5 bits/symbol).  Unlike QAM16 which is differential, QAM32
+ * is ABSOLUTE-coherent: each symbol is transmitted at its literal (I, Q)
+ * coordinate with the reference symbol providing a channel phase anchor.
+ *
+ * The decoder reconstructs absolute (I, Q) from the already-demodulated
+ * differential-phase / magnitude stream (intPhases[] / intMags[]):
+ *
+ *   theta_abs[k] = theta_ref - sum_{j=0..k} intPhases[carrier][j]
+ *
+ * (the minus sign comes from ComputeAng1_Ang2 convention — see
+ *  Demod1CarOFDMChar).  `theta_ref` is the phase of the last mode-bit
+ * symbol, snapshotted into intPSKRefPhase[] by InitDemodOFDM().
+ *
+ * I/Q convention.  The encoder synthesises
+ *     s[n] = SCALE * (I * template[4] + Q * template[0])
+ *          = SCALE * (I * cos(wt) + Q * sin(wt))     (since template[4]=cos, [0]=sin)
+ * which on the receiver's Goertzel produces
+ *     dblReal = Acos(phi)   dblImag = Asin(phi)
+ * modelling a transmitted A*cos(wt - phi) as A(cos(phi)cos(wt)+sin(phi)sin(wt)).
+ * So I = cos(phi) * A = dblReal, Q = sin(phi) * A = dblImag — exactly the
+ * axes the constellation is stored against.  The reference symbol's
+ * magnitude `fltCarRefMag[]` (full-amplitude) is the channel gain anchor,
+ * and the encoder's QAM32_TX_SCALE is divided out so the normalised
+ * (I, Q) can be compared directly against qam32_constellation[].
+ *
+ * The demapper is exhaustive: 32 Euclidean distances per symbol, keep the
+ * min.  Cheap at any realistic carrier count.
+ *
+ * Output packing mirrors GetSym32QAM: 8 symbols of 5 bits each, MSB-first,
+ * pack into 5 bytes (bits 39..35 go in byte 0's top 5 bits, etc.).  The
+ * carrier's intDataBytesPerCar is a multiple of 5 (the encoder's 5-byte /
+ * 8-symbol increment guarantees this as long as intDataLen + intRSLen + 4
+ * is itself a multiple of 5 — it is 129 for QAM32).  Wait: 100+25+4 = 129
+ * which is NOT a multiple of 5.  See the trailing-symbols handling in the
+ * loop below.
+ *
+ * On any real intDataBytesPerCar whose per-carrier symbol count (8/5 *
+ * bytes) isn't a whole multiple of 8 symbols, the decoder still consumes
+ * the symbols one 8-tuple at a time and writes out 5 bytes per tuple.  If
+ * the encoder's per-carrier buffer ends mid-group, we simply stop
+ * producing bytes there — matching whatever the encoder did at its tail.
+ * ========================================================================= */
+static uint8_t qam32_demap(float i_samp, float q_samp)
+{
+	/* Exhaustive minimum-Euclidean-distance search over all 32 points. */
+	float bestD2 = 1e30f;
+	uint8_t bestLabel = 0;
+	int k;
+	for (k = 0; k < 32; k++)
+	{
+		float di = i_samp - qam32_constellation[k].i;
+		float dq = q_samp - qam32_constellation[k].q;
+		float d2 = di * di + dq * dq;
+		if (d2 < bestD2)
+		{
+			bestD2 = d2;
+			bestLabel = qam32_constellation[k].label;
+		}
+	}
+	return bestLabel;
+}
+
+VOID Decode1CarOFDM_QAM32(int Carrier)
+{
+	/* Reference symbol anchor — saved by InitDemodOFDM. */
+	float refMag = fltCarRefMag[Carrier];
+	/* Defensive: if refMag is zero (shouldn't happen — ref symbol is always
+	 * transmitted at full amplitude), fall back to 1.0 so the demapper at
+	 * least returns *something*.  A failed ref → garbage (I, Q) → RS decode
+	 * will fail gracefully downstream. */
+	if (refMag < 1.0f) refMag = 1.0f;
+
+	/* QAM32 TX scale from EncodeOFDMData's QAM32 branch — must stay in sync
+	 * with the encoder.  Factored out as a convenience; one value, one spot. */
+	static const float QAM32_TX_SCALE = 0.767f;
+
+	/* Milliradian -> radian.  intPhases[] stores milliradians × 1000 scale
+	 * (atan2 result * 1000, wrapped to the int range used by
+	 * ComputeAng1_Ang2).  We'll convert only at the cos/sin call. */
+	const float mrad_to_rad = 1.0f / 1000.0f;
+
+	/* Running absolute phase, seeded with the reference symbol's phase. */
+	int theta_abs = intPSKRefPhase[Carrier];
+
+	UCHAR * Decoded = bytFrameData[0];
+	int Len = intPhasesLen;
+	int readPos = 0;
+	int writePos = 0;
+
+	/* Process symbols in groups of 8 (one 5-byte output group per group). */
+	while (Len >= 8)
+	{
+		uint64_t packed = 0;
+		int k;
+		for (k = 0; k < 8; k++)
+		{
+			/* Advance absolute phase by the (negative of the) stored diff. */
+			theta_abs -= intPhases[Carrier][readPos];
+			/* Keep it in a sensible numeric range — mod 2π*1000 ≈ 6283.
+			 * Use a loop (diffs are always within a few thousand) rather
+			 * than fmodf to stay integer. */
+			while (theta_abs >  3142) theta_abs -= 6283;
+			while (theta_abs < -3142) theta_abs += 6283;
+
+			float phi = (float)theta_abs * mrad_to_rad;
+			float mag = (float)intMags[Carrier][readPos];
+
+			/* Measured I, Q in the raw Goertzel amplitude domain. */
+			float fi_raw = mag * cosf(phi);
+			float fq_raw = mag * sinf(phi);
+
+			/* Normalise to the unit-avg-power QAM32 constellation domain.
+			 * Encoder: s = ref_template_amp * SCALE * (I*cos + Q*sin).
+			 * So Goertzel measures A_ref * SCALE * (I, Q).  Dividing by
+			 * (refMag * SCALE) returns (I, Q) in constellation units. */
+			float denom = refMag * QAM32_TX_SCALE;
+			float fi = fi_raw / denom;
+			float fq = fq_raw / denom;
+
+			uint8_t label = qam32_demap(fi, fq);
+
+			/* Pack MSB-first: symbol k occupies bits (5*(7-k)) .. (5*(7-k)+4). */
+			packed |= ((uint64_t)(label & 0x1f)) << (5 * (7 - k));
+
+			readPos++;
+		}
+
+		/* Emit 5 bytes, big-endian. */
+		if (writePos + 5 <= 256)  /* bytFrameData[0] is sized for 82+ bytes; stay safe */
+		{
+			Decoded[writePos + 0] = (UCHAR)((packed >> 32) & 0xff);
+			Decoded[writePos + 1] = (UCHAR)((packed >> 24) & 0xff);
+			Decoded[writePos + 2] = (UCHAR)((packed >> 16) & 0xff);
+			Decoded[writePos + 3] = (UCHAR)((packed >>  8) & 0xff);
+			Decoded[writePos + 4] = (UCHAR)( packed        & 0xff);
+			writePos += 5;
+		}
+
+		Len -= 8;
+	}
+
+	/* Handle any trailing 1..7 symbols — unlikely in practice (the encoder
+	 * pads to whole 8-symbol groups via intDataBytesPerCar), but defensive:
+	 * demap them without producing byte output so the absolute-phase
+	 * accumulator stays consistent if this function is ever called on a
+	 * partial block. */
+	while (Len > 0)
+	{
+		theta_abs -= intPhases[Carrier][readPos];
+		while (theta_abs >  3142) theta_abs -= 6283;
+		while (theta_abs < -3142) theta_abs += 6283;
+		readPos++;
+		Len--;
+	}
+
+	/* Silence unused-var warnings from earlier draft. */
+	(void)Decoded;
+
+	/* Expose a few locals for the shared decoder path.  Decode1CarOFDM (QAM16)
+	 * sets pskStart and charIndex; keep the convention for parity and for any
+	 * downstream code that inspects them. */
+	pskStart = readPos;
+	charIndex = writePos;
+}
+
 BOOL DemodOFDM()
 {
 	int Used = 0;
@@ -1372,6 +1555,8 @@ BOOL DemodOFDM()
 		
 		if (RXOFDMMode == PSK8)
 			SymbolsLeft -=3;
+		else if (RXOFDMMode == QAM32)
+			SymbolsLeft -= 5;	/* Phase 6.3c: 8-symbol group -> 5 bytes */
 		else
 			SymbolsLeft--;		// number still to decode
 
@@ -1418,24 +1603,31 @@ BOOL DemodOFDM()
 				int decodeLen, ofdmBlock;;
 
 				CarrierOk[i] = 0;					// Always reprocess carriers
-		
-				if (RXOFDMMode == QAM16)
+
+				/* Phase 6.3c: QAM32 gets its own absolute-coherent demapper.
+				 * QAM16 stays on the differential Decode1CarOFDM; everything
+				 * else routes to the PSK path. */
+				if (RXOFDMMode == QAM32)
+					Decode1CarOFDM_QAM32(i);
+				else if (RXOFDMMode == QAM16)
 					Decode1CarOFDM(i);
 				else
 					Decode1CarPSK(i, TRUE);
 
 				// with OFDM each carrier has a sequence number, as we can do selective repeats if a carrier is missed.
-				// so decode into a separate buffer, and copy good data into the correct place in the received data buffer. 
+				// so decode into a separate buffer, and copy good data into the correct place in the received data buffer.
 
 			decodeLen = CorrectRawDataWithRS(&bytFrameData[0][0], decodeBuff , intDataLen + 1, intRSLen, intFrameType, i);
 
-				// if decode fails try with a tuning offset correction 
+				// if decode fails try with a tuning offset correction
 
 				if (CarrierOk[i] == 0)
 				{
 					CorrectPhaseForTuningOffset(&intPhases[i][0], intPhasesLen, intPSKMode);
-	
-					if (RXOFDMMode == QAM16)
+
+					if (RXOFDMMode == QAM32)
+						Decode1CarOFDM_QAM32(i);
+					else if (RXOFDMMode == QAM16)
 						Decode1CarOFDM(i);
 					else
 						Decode1CarPSK(i, TRUE);

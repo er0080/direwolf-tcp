@@ -856,7 +856,17 @@ returnBad:
 double dblPhaseInc;  // in milliradians
 short intNforGoertzel[MAXCAR];
 short intPSKPhase_1[MAXCAR], intPSKPhase_0[MAXCAR];
-short intCP[MAXCAR];	  // Cyclic prefix offset 
+/* Phase 6.3c: snapshot of the per-carrier reference-symbol state, captured
+ * at the end of InitDemodOFDM().  The QAM32 demapper needs absolute (rather
+ * than differential) phase + a magnitude anchor to compare against the
+ * unit-power cross-32 constellation.  intPSKRefPhase[i] is the absolute
+ * phase (milliradians, same scale as intPSKPhase_*) of the last training
+ * symbol (third mode bit) for carrier i — i.e. the phase just before the
+ * first data symbol.  intCarRefMag[i] is the averaged Goertzel magnitude
+ * of the reference + mode-bit symbols.  Used only by Decode1CarOFDM_QAM32. */
+short intPSKRefPhase[MAXCAR];
+float fltCarRefMag[MAXCAR];
+short intCP[MAXCAR];	  // Cyclic prefix offset
 float dblFreqBin[MAXCAR];
 
 BOOL CheckFrameTypeParity(int intTonePtr, int * intToneMags);

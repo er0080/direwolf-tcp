@@ -463,6 +463,267 @@ static void test_qam32_map_symbol_to_iq(void)
     }
 }
 
+/* ==========================================================================
+ * Phase 6.3c: QAM32 decoder (demapper) tests
+ *
+ * The tests below follow test_qam16_roundtrip_zero_noise's pattern of
+ * exercising the math in isolation rather than linking ofdm.o (which
+ * would drag in ALSA / the full modem state machine).  The demapper
+ * duplicate here is byte-identical to qam32_demap() in
+ * src/ardopc/ardop2ofdm/ofdm.c; if production drifts, on-air BER drifts
+ * in lockstep with this test's measured SER.
+ * ========================================================================= */
+
+/* Demapper: min-Euclidean distance over all 32 constellation points.
+ * Mirrors ofdm.c:qam32_demap() exactly. */
+static uint8_t test_qam32_demap(float i_samp, float q_samp)
+{
+    float bestD2 = 1e30f;
+    uint8_t bestLabel = 0;
+    for (int k = 0; k < 32; k++) {
+        float di = i_samp - qam32_constellation[k].i;
+        float dq = q_samp - qam32_constellation[k].q;
+        float d2 = di * di + dq * dq;
+        if (d2 < bestD2) {
+            bestD2 = d2;
+            bestLabel = qam32_constellation[k].label;
+        }
+    }
+    return bestLabel;
+}
+
+/* Deterministic Box-Muller Gaussian: unit-variance, mean 0.  Seeded via
+ * a simple xorshift PRNG so the test is repeatable across runs. */
+static uint32_t g_rng_state = 0xC0FFEEu;
+static uint32_t xorshift32(void)
+{
+    uint32_t x = g_rng_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    g_rng_state = x;
+    return x;
+}
+static float urand01(void)
+{
+    /* (0,1] — avoid 0 to keep log() safe. */
+    uint32_t u = xorshift32();
+    return ((float)(u | 1u)) / 4294967296.0f;
+}
+static void box_muller(float sigma, float *n1, float *n2)
+{
+    float u1 = urand01();
+    float u2 = urand01();
+    float r = sqrtf(-2.0f * logf(u1));
+    float t = 2.0f * (float)M_PI * u2;
+    *n1 = sigma * r * cosf(t);
+    *n2 = sigma * r * sinf(t);
+}
+
+/* Test 11: exact demap.  Every constellation point, no noise, recovers
+ * its own label. */
+static void test_qam32_demap_exact(void)
+{
+    for (int i = 0; i < 32; i++) {
+        float I = qam32_constellation[i].i;
+        float Q = qam32_constellation[i].q;
+        uint8_t got = test_qam32_demap(I, Q);
+        TEST_ASSERT_EQUAL_UINT8(qam32_constellation[i].label, got);
+    }
+}
+
+/* Test 12: demap under Gaussian noise at SNR 25 dB (clean channel).
+ *
+ * Unit-power constellation ⇒ Es = 1.  At Es/N0 = 25 dB, N0 = 10^(-2.5)
+ * ≈ 0.00316, σ per complex-dim = sqrt(N0/2) ≈ 0.0397.
+ *
+ * For cross-32QAM min d_min in unit-power normalised coordinates is
+ * 2/sqrt(20) ≈ 0.447.  d_min / (2σ) ≈ 5.63, Q(5.63) ≈ 9e-9, union-bound
+ * SER well below 1e-6.  With 3200 trials the expected error count is
+ * ~0 — the test threshold of 1% is a very loose sanity check that the
+ * demapper is behaving in the high-SNR regime. */
+static void test_qam32_demap_noise_clean(void)
+{
+    const float snr_dB = 25.0f;
+    const float Es     = 1.0f;
+    const float N0     = Es * powf(10.0f, -snr_dB / 10.0f);
+    const float sigma  = sqrtf(N0 / 2.0f);
+
+    const int trials_per_point = 100;
+    int errors = 0;
+    int total  = 0;
+
+    g_rng_state = 0xC0FFEEu;  /* reset for determinism */
+
+    for (int i = 0; i < 32; i++) {
+        float I = qam32_constellation[i].i;
+        float Q = qam32_constellation[i].q;
+        uint8_t expected = qam32_constellation[i].label;
+
+        for (int t = 0; t < trials_per_point; t++) {
+            float n1, n2;
+            box_muller(sigma, &n1, &n2);
+            uint8_t got = test_qam32_demap(I + n1, Q + n2);
+            if (got != expected) errors++;
+            total++;
+        }
+    }
+
+    double ser = (double)errors / (double)total;
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "SNR 25 dB SER %.4f (%d/%d) - expected < 0.01 (theory ~1e-8)",
+             ser, errors, total);
+    TEST_ASSERT_TRUE_MESSAGE(ser < 0.01, msg);
+}
+
+/* Test 12b: demap under Gaussian noise at SNR 15 dB (moderate SNR).
+ *
+ * At Es/N0 = 15 dB, N0 = 10^(-1.5) ≈ 0.0316, σ per complex-dim =
+ * sqrt(N0/2) ≈ 0.126.  d_min / (2σ) ≈ 1.77, Q(1.77) ≈ 0.038.  The
+ * dominant error probability comes from the ~4 Euclidean neighbours of
+ * each point, giving SER ≈ 0.15 on a cross-32 constellation (edge
+ * points have fewer neighbours, so actual SER is ~0.10–0.15).  Test
+ * threshold of 25% gives RNG-margin while still catching a flat-broken
+ * demapper (which would score ~97% SER). */
+static void test_qam32_demap_noise_15dB(void)
+{
+    const float snr_dB = 15.0f;
+    const float Es     = 1.0f;
+    const float N0     = Es * powf(10.0f, -snr_dB / 10.0f);
+    const float sigma  = sqrtf(N0 / 2.0f);
+
+    const int trials_per_point = 100;
+    int errors = 0;
+    int total  = 0;
+
+    g_rng_state = 0xC0FFEEu;
+
+    for (int i = 0; i < 32; i++) {
+        float I = qam32_constellation[i].i;
+        float Q = qam32_constellation[i].q;
+        uint8_t expected = qam32_constellation[i].label;
+
+        for (int t = 0; t < trials_per_point; t++) {
+            float n1, n2;
+            box_muller(sigma, &n1, &n2);
+            uint8_t got = test_qam32_demap(I + n1, Q + n2);
+            if (got != expected) errors++;
+            total++;
+        }
+    }
+
+    double ser = (double)errors / (double)total;
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "SNR 15 dB SER %.4f (%d/%d) - theory ~0.10-0.15, allow <= 0.25",
+             ser, errors, total);
+    TEST_ASSERT_TRUE_MESSAGE(ser < 0.25, msg);
+}
+
+/* Test 13: demap round-trip via the encoder I/Q mapping (zero noise).
+ *
+ * Walks a known byte stream through qam32_extract_symbol() (test helper
+ * that mirrors GetSym32QAM in ofdm.c), maps each symbol to (I, Q) via
+ * qam32_map_symbol_to_iq(), demaps back, re-packs into bytes, and
+ * asserts byte-for-byte identity. */
+static void test_qam32_roundtrip_zero_noise(void)
+{
+    /* 30 bytes = 6 groups of 5 bytes = 48 symbols.  Mix of patterns. */
+    const uint8_t input[30] = {
+        0xF8, 0x3E, 0x0F, 0x83, 0xE0,   /* all-31 / all-0 alternating */
+        0x00, 0x84, 0x21, 0x08, 0x42,   /* all-2 pattern */
+        0x01, 0x23, 0x45, 0x67, 0x89,   /* increasing nibbles */
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA,
+        0xFE, 0xBA, 0xBE, 0x12, 0x34,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF,   /* all-1 bits */
+    };
+
+    uint8_t output[30] = {0};
+
+    for (int g = 0; g < 6; g++) {
+        const uint8_t *in_group = &input[g * 5];
+        uint8_t *out_group      = &output[g * 5];
+
+        /* Encode side: 8 symbols from 5 bytes. */
+        uint8_t labels[8];
+        for (int k = 0; k < 8; k++) {
+            labels[k] = qam32_extract_symbol(in_group, k);
+        }
+
+        /* Channel (zero-noise, no scaling — constellation-domain (I, Q)). */
+        uint8_t recovered_labels[8];
+        for (int k = 0; k < 8; k++) {
+            float I = 0.0f, Q = 0.0f;
+            qam32_map_symbol_to_iq(labels[k], &I, &Q);
+            recovered_labels[k] = test_qam32_demap(I, Q);
+            TEST_ASSERT_EQUAL_UINT8_MESSAGE(labels[k], recovered_labels[k],
+                "zero-noise demap must recover the exact label");
+        }
+
+        /* Decode side: pack 8 x 5-bit labels MSB-first into 5 bytes. */
+        uint64_t packed = 0;
+        for (int k = 0; k < 8; k++) {
+            packed |= ((uint64_t)(recovered_labels[k] & 0x1f)) << (5 * (7 - k));
+        }
+        out_group[0] = (uint8_t)((packed >> 32) & 0xff);
+        out_group[1] = (uint8_t)((packed >> 24) & 0xff);
+        out_group[2] = (uint8_t)((packed >> 16) & 0xff);
+        out_group[3] = (uint8_t)((packed >>  8) & 0xff);
+        out_group[4] = (uint8_t)( packed        & 0xff);
+    }
+
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(input, output, 30);
+}
+
+/* Test 14: bit-error rate at SNR 10 dB (noisier channel).  Sanity check
+ * that the demapper degrades gracefully rather than falling off a cliff.
+ *
+ * At 10 dB, d_min / (2σ) ≈ 1.0; actual SER ≈ 30-40%.  BER is roughly
+ * SER * avg_Hamming / log2(M); with quasi-Gray labeling (avg Hamming
+ * ~1.15 to Euclidean neighbours) BER ≈ 0.35 * 1.15 / 5 ≈ 8% — but
+ * farther-than-adjacent errors raise the Hamming average well above
+ * 1.15, so observed BER lands in the 10-15% range.  Test threshold of
+ * 20% catches gross demapper breakage while tolerating RNG drift. */
+static void test_qam32_bit_error_rate_10dB(void)
+{
+    const float snr_dB = 10.0f;
+    const float Es     = 1.0f;
+    const float N0     = Es * powf(10.0f, -snr_dB / 10.0f);
+    const float sigma  = sqrtf(N0 / 2.0f);
+
+    const int trials_per_point = 100;
+    int bit_errors = 0;
+    int bits_total = 0;
+
+    g_rng_state = 0xB17E4Au;  /* different seed so results differ from 15 dB */
+
+    for (int i = 0; i < 32; i++) {
+        float I = qam32_constellation[i].i;
+        float Q = qam32_constellation[i].q;
+        uint8_t tx = qam32_constellation[i].label;
+
+        for (int t = 0; t < trials_per_point; t++) {
+            float n1, n2;
+            box_muller(sigma, &n1, &n2);
+            uint8_t rx = test_qam32_demap(I + n1, Q + n2);
+            uint8_t x = (uint8_t)(tx ^ rx);
+            /* Count bits in the low 5. */
+            for (int b = 0; b < 5; b++) {
+                bit_errors += (x >> b) & 1;
+            }
+            bits_total += 5;
+        }
+    }
+
+    double ber = (double)bit_errors / (double)bits_total;
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "SNR 10 dB BER %.4f (%d/%d) - theory ~0.10-0.15, allow <= 0.20",
+             ber, bit_errors, bits_total);
+    TEST_ASSERT_TRUE_MESSAGE(ber < 0.20, msg);
+}
+
 /* -- main --------------------------------------------------------------- */
 int main(void)
 {
@@ -478,5 +739,11 @@ int main(void)
     RUN_TEST(test_qam32_gray_quality);
     RUN_TEST(test_qam32_symbol_packing);
     RUN_TEST(test_qam32_map_symbol_to_iq);
+    /* Phase 6.3c */
+    RUN_TEST(test_qam32_demap_exact);
+    RUN_TEST(test_qam32_demap_noise_clean);
+    RUN_TEST(test_qam32_demap_noise_15dB);
+    RUN_TEST(test_qam32_roundtrip_zero_noise);
+    RUN_TEST(test_qam32_bit_error_rate_10dB);
     return UNITY_END();
 }
