@@ -81,6 +81,7 @@ echo
 
 # shellcheck disable=SC1090
 source "$CONF"
+FECREPEATS="${FECREPEATS:-0}"
 
 mkdir -p "$LOG_DIR"
 
@@ -129,6 +130,7 @@ ip netns exec "$NS_A" "$ARDOP_IP" \
     --tun-dev   "$IC705_TUN" \
     --mtu       "$MTU" \
     --bw        "$BANDWIDTH" \
+    --fec-repeats "$FECREPEATS" \
     --civ-port  "$IC705_CIV_PORT" \
     --civ-addr  "$IC705_CIV_ADDR" \
     --civ-baud  "$IC705_CIV_BAUD" \
@@ -146,6 +148,7 @@ ip netns exec "$NS_B" "$ARDOP_IP" \
     --tun-dev   "$IC7300_TUN" \
     --mtu       "$MTU" \
     --bw        "$BANDWIDTH" \
+    --fec-repeats "$FECREPEATS" \
     --civ-port  "$IC7300_CIV_PORT" \
     --civ-addr  "$IC7300_CIV_ADDR" \
     --civ-baud  "$IC7300_CIV_BAUD" \
