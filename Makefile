@@ -67,7 +67,7 @@ src/%.o: src/%.c
 
 -include $(OBJS:.o=.d)
 
-TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq tests/test_tun_fec
+TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq tests/test_tun_fec tests/test_varsize
 
 clean:
 	rm -f ardop-ip $(TEST_BINS) $(OBJS) $(OBJS:.o=.d) tests/*.o tests/*.d
@@ -136,4 +136,12 @@ tests/test_tun_fec: tests/test_tun_fec.c src/tun_ardopc.o src/tun_interface.o \
                     $(UNITY_OBJS) $(TUN_FEC_STUB_OBJ)
 	$(CC) $(CFLAGS) $^ -o $@
 
-test: test_tun test_civ test_fec test_arq test_tun_fec
+# ── Phase 6.2: variable OFDM carrier count unit tests ────────────────────
+test_varsize: tests/test_varsize
+	tests/test_varsize
+
+# Standalone — embeds its own copy of ComputeCarriersNeeded so no ARDOPC.o.
+tests/test_varsize: tests/test_varsize.c $(UNITY_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@
+
+test: test_tun test_civ test_fec test_arq test_tun_fec test_varsize

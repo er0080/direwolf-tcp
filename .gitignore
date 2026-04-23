@@ -14,3 +14,4 @@ tests/test_fec
 tests/test_civ
 tests/test_arq
 tests/test_tun_fec
+tests/test_varsize

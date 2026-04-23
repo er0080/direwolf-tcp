@@ -1096,6 +1096,50 @@ int MaxErrors = 0;
  */
 int FECStrengthNPAR = 20;
 
+/*
+ * Phase 6.2 (ardop-ip): variable per-TX OFDM carrier count.
+ *
+ * EncodeOFDMData() sizes the number of carriers actually emitted in the
+ * frame to the payload: carriers_needed = ceil(len / (intDataLen+intRSLen)).
+ * The result is clamped to [MinFrameCarriers, MaxFrameCarriers] and finally
+ * to the mode's intNumCar (3 for 200 Hz, 9 for 500 Hz, 43 for 2500 Hz).
+ *
+ * Defaults preserve Phase 6.1 behaviour for full-sized payloads: the mode's
+ * natural ceiling still applies, but small payloads (SYN, ICMP) no longer
+ * pad out to 43 carriers.
+ *
+ * CONSTRAINT (decoder side, Phase 6.2 TODO):
+ *   The receiver currently derives carrier count solely from the 4FSK
+ *   frame-type byte via FrameInfo().  There is NO on-air signalling of the
+ *   dynamic `carriers` value yet.  Until the RX side lands, this knob only
+ *   shortens ENCODED byte output, not transmitted air time — both ends must
+ *   still use MaxFrameCarriers = natural max for interop.
+ *
+ * See CLAUDE.md Phase 6.2 for the proposed wire-format signalling plan.
+ */
+int MinFrameCarriers = 1;
+int MaxFrameCarriers = MAXCAR;   /* 43 */
+
+/*
+ * Phase 6.2: shared carrier-count helper used by EncodeOFDMData and by
+ * tests/test_varsize.  Keeps the clamp rules in one place.
+ */
+int ComputeCarriersNeeded(int length, int bytes_per_car, int mode_num_car)
+{
+    int n;
+    if (bytes_per_car <= 0) return mode_num_car;
+    if (length < 0) length = 0;
+
+    n = (length + bytes_per_car - 1) / bytes_per_car;
+    if (n < 1) n = 1;
+
+    if (n < MinFrameCarriers) n = MinFrameCarriers;
+    if (n > MaxFrameCarriers) n = MaxFrameCarriers;
+    if (n > mode_num_car)     n = mode_num_car;
+    if (n < 1)                n = 1;  /* final safety */
+    return n;
+}
+
 int RSEncode(UCHAR * bytToRS, UCHAR * RSBytes, int DataLen, int RSLen)
 {
 	// This just returns the Parity Bytes. I don't see the point

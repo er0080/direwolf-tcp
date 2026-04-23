@@ -773,4 +773,32 @@ extern const char OFDMModes[8][6];
  * block.  Override applied in GetOFDMFrameInfo().  See ARDOPC.c for docs. */
 extern int FECStrengthNPAR;
 
+/* Phase 6.2: runtime-tunable min/max OFDM carrier count per TX frame.
+ *
+ * EncodeOFDMData() picks a carrier count `carriers` sized to the payload,
+ * clamped to [MinFrameCarriers, MaxFrameCarriers] and to the mode's natural
+ * intNumCar.  See ARDOPC.c and ofdm.c for the full rationale.
+ *
+ *   MinFrameCarriers — default 1
+ *   MaxFrameCarriers — default MAXCAR (43)
+ */
+extern int MinFrameCarriers;
+extern int MaxFrameCarriers;
+
+/*
+ * Phase 6.2: compute the number of OFDM carriers needed for a payload.
+ *
+ * Encapsulates the clamp rules so the logic is unit-testable independently
+ * of the giant EncodeOFDMData() global-state tangle.  Called from both the
+ * encoder and test_varsize.
+ *
+ *   length         — payload byte count (>= 0)
+ *   bytes_per_car  — per-carrier capacity (intDataLen after NPAR override)
+ *   mode_num_car   — mode's natural carrier ceiling (3 / 9 / 43)
+ *
+ * Returns a value in [1, mode_num_car] that is ALSO clamped to
+ * [MinFrameCarriers, MaxFrameCarriers].
+ */
+int ComputeCarriersNeeded(int length, int bytes_per_car, int mode_num_car);
+
 #endif

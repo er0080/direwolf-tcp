@@ -778,9 +778,32 @@ int EncodeOFDMData(UCHAR bytFrameType, UCHAR * bytDataToSend, int Length, unsign
 
 	GetOFDMFrameInfo(OFDMMode, &intDataLen, &intRSLen, &Dummy, &Dummy);
 
-	//	Generate the 2 bytes for the frame type data:
+	/* Phase 6.2: size carrier count to actual payload.
+	 *
+	 * Each carrier carries (intDataLen) useful bytes after the NPAR override
+	 * applied in GetOFDMFrameInfo.  Compute how many carriers are needed to
+	 * fit `Length` bytes and clamp to [Min, Max] then to the mode ceiling.
+	 *
+	 * NOTE (signalling): this loop still iterates intNumCar times below so
+	 * the on-air frame matches the legacy wire format (every carrier sends
+	 * something — either fresh bytes or duplicates for diversity).  What
+	 * changes under Phase 6.2 is the DIVERSITY PLAN — `carriers_needed`
+	 * drives the repeat logic so the data is spread over exactly the
+	 * necessary number of UNIQUE blocks.  Future work: shrink the outer
+	 * loop to `carriers` and add RX-side carrier count signalling to save
+	 * actual air time.  See ARDOPC.c and CLAUDE.md Phase 6.2. */
+	{
+		int len_est = Length - BytesSent;
+		if (len_est < 0) len_est = 0;
+		CarriersSent = ComputeCarriersNeeded(len_est, intDataLen, intNumCar);
+		WriteDebugLog(LOGDEBUG,
+		    "Phase6.2 EncodeOFDMData: Length=%d bytes_per_car=%d "
+		    "carriers_needed=%d (clamp [%d..%d] mode ceil %d)",
+		    len_est, intDataLen, CarriersSent,
+		    MinFrameCarriers, MaxFrameCarriers, intNumCar);
+	}
 
-	CarriersSent = intNumCar;
+	//	Generate the 2 bytes for the frame type data:
 	
 	bytEncodedBytes[0] = bytFrameType;
 	bytEncodedBytes[1] = bytFrameType ^ bytSessionID;

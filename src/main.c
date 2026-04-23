@@ -31,6 +31,8 @@ extern UCHAR                 PTTOffCmd[];
 extern UCHAR                 PTTOffCmdLen;
 extern HANDLE                hCATDevice;
 extern int                   FECStrengthNPAR;
+extern int                   MinFrameCarriers;
+extern int                   MaxFrameCarriers;
 
 void ardopmain(void);
 void tun_ardopc_init(int tun_fd, const char *fec_mode);
@@ -121,6 +123,10 @@ static void usage(const char *prog)
         "                    (NPAR = 10 | 20 | 40, default: normal).\n"
         "                    Both peers MUST use the same value — NPAR is\n"
         "                    not signalled on-air.\n"
+        "  --min-frame-carriers N   minimum OFDM carriers per TX (default 1)\n"
+        "  --max-frame-carriers N   maximum OFDM carriers per TX (default 43)\n"
+        "                    Phase 6.2: encoder sizes carriers to payload.\n"
+        "                    Defaults preserve Phase 6.1 on-air behaviour.\n"
         "\n"
         "CI-V radio control:\n"
         "  --civ-port PORT   Serial port (e.g. /dev/ic_705_a)\n"
@@ -145,6 +151,8 @@ int main(int argc, char *argv[])
     int         mtu      = 1460;
     int         bw       = 2;   /* XB2500 — 2500 Hz */
     int         fec_npar = 20;  /* normal */
+    int         min_car  = 1;   /* Phase 6.2 default: 1 carrier minimum */
+    int         max_car  = 43;  /* Phase 6.2 default: MAXCAR ceiling */
 
     static struct option long_opts[] = {
         { "audio",        required_argument, 0, 'a' },
@@ -158,6 +166,8 @@ int main(int argc, char *argv[])
         { "bw",           required_argument, 0, 'w' },
         { "mtu",          required_argument, 0, 'M' },
         { "fec-strength", required_argument, 0, 'S' },
+        { "min-frame-carriers", required_argument, 0, 'n' },
+        { "max-frame-carriers", required_argument, 0, 'x' },
         { "help",         no_argument,       0, 'h' },
         { 0, 0, 0, 0 }
     };
@@ -186,6 +196,8 @@ int main(int argc, char *argv[])
                 usage(argv[0]); return 1;
             }
             break;
+        case 'n': min_car = atoi(optarg); break;
+        case 'x': max_car = atoi(optarg); break;
         case 'h': usage(argv[0]); return 0;
         default:  usage(argv[0]); return 1;
         }
@@ -212,6 +224,14 @@ int main(int argc, char *argv[])
     ARQBandwidth = (enum _ARQBandwidth)bw;
     UseKISS      = FALSE;
     FECStrengthNPAR = fec_npar;
+
+    /* Phase 6.2: clamp and apply min/max carrier knobs */
+    if (min_car < 1)  min_car = 1;
+    if (min_car > 43) min_car = 43;
+    if (max_car < min_car) max_car = min_car;
+    if (max_car > 43) max_car = 43;
+    MinFrameCarriers = min_car;
+    MaxFrameCarriers = max_car;
 
     /* FEC mode string: pick from --bw value. */
     const char *fec_mode;
@@ -259,8 +279,10 @@ int main(int argc, char *argv[])
     const char *strength =
         (fec_npar == 10) ? "light"  :
         (fec_npar == 40) ? "strong" : "normal";
-    printf("ardop-ip: %s  %s  FEC %s  strength %s (NPAR=%d)\n",
-           mycall, audio, fec_mode, strength, fec_npar);
+    printf("ardop-ip: %s  %s  FEC %s  strength %s (NPAR=%d) "
+           "carriers=[%d..%d]\n",
+           mycall, audio, fec_mode, strength, fec_npar,
+           MinFrameCarriers, MaxFrameCarriers);
 
     ardopmain();
 
