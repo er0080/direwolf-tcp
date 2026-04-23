@@ -128,8 +128,6 @@ ip netns exec "$NS_A" "$ARDOP_IP" \
     --peer-ip   "$IC7300_IP" \
     --tun-dev   "$IC705_TUN" \
     --mtu       "$MTU" \
-    --iss \
-    --peer-call "$IC7300_MYCALL" \
     --bw        "$BANDWIDTH" \
     --civ-port  "$IC705_CIV_PORT" \
     --civ-addr  "$IC705_CIV_ADDR" \
@@ -147,7 +145,6 @@ ip netns exec "$NS_B" "$ARDOP_IP" \
     --peer-ip   "$IC705_IP" \
     --tun-dev   "$IC7300_TUN" \
     --mtu       "$MTU" \
-    --irs \
     --bw        "$BANDWIDTH" \
     --civ-port  "$IC7300_CIV_PORT" \
     --civ-addr  "$IC7300_CIV_ADDR" \

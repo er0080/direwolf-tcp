@@ -67,7 +67,7 @@ src/%.o: src/%.c
 
 -include $(OBJS:.o=.d)
 
-TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq
+TEST_BINS = tests/test_tun tests/test_civ tests/test_fec tests/test_arq tests/test_tun_fec
 
 clean:
 	rm -f ardop-ip $(TEST_BINS) $(OBJS) $(OBJS:.o=.d) tests/*.o tests/*.d
@@ -121,4 +121,19 @@ tests/test_arq: tests/test_arq.c $(ARDOPC)/ARQ.o $(UNITY_OBJS) \
                 $(ARQ_STUB_OBJ) $(TEST_STUB_OBJ)
 	$(CC) $(CFLAGS) $^ -o $@
 
-test: test_tun test_civ test_fec test_arq
+# ── Phase 6.1a: TUN/FEC bridge unit tests ─────────────────────────────────
+test_tun_fec: tests/test_tun_fec
+	tests/test_tun_fec
+
+TUN_FEC_STUB_OBJ = tests/tun_fec_test_stubs.o
+
+tests/tun_fec_test_stubs.o: tests/tun_fec_test_stubs.c
+	$(CC) $(CFLAGS) -MMD -c $< -o $@
+
+# test_tun_fec: real tun_ardopc.o + real tun_interface.o (for tun_write),
+# plus stubs for ARDOPC globals that tun_ardopc.c references.
+tests/test_tun_fec: tests/test_tun_fec.c src/tun_ardopc.o src/tun_interface.o \
+                    $(UNITY_OBJS) $(TUN_FEC_STUB_OBJ)
+	$(CC) $(CFLAGS) $^ -o $@
+
+test: test_tun test_civ test_fec test_arq test_tun_fec

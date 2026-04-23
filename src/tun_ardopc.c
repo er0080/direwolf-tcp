@@ -1,11 +1,18 @@
 /*
- * tun_ardopc.c — bridges the ardopc ARQ core to a Linux TUN interface
+ * tun_ardopc.c — bridges the TUN interface to the ardopc FEC datagram core.
  *
  * Provides three entry points consumed in ARDOP_IP builds:
  *
  *   tun_ardopc_init()  — called from main() before ardopmain()
  *   TUNHostPoll()      — called each event-loop tick instead of TCPHostPoll
- *   TUNDeliverToHost() — called by HostInterface.c when ARQ delivers a frame
+ *   TUNDeliverToHost() — called by HostInterface.c when the PHY delivers a frame
+ *
+ * Phase 6.1: ARQ has been excised.  ardop-ip now runs in pure FEC mode —
+ * every packet the kernel sends via TUN is handed to StartFEC() which
+ * encodes it with strong Reed-Solomon FEC and transmits it once.  There is
+ * no ISS/IRS role, no ConReq/BREAK/IDLE state dance, and no peer callsign.
+ * TCP above the link handles retransmit for us; UDP either delivers or is
+ * lost (matching TCP/IP norms).
  */
 
 #include <poll.h>
@@ -15,40 +22,41 @@
 #include "ARDOPC.h"
 #include "tun_interface.h"
 
-static int  g_tun_fd         = -1;
-static int  g_iss            = 0;
-static char g_mycall[10]     = "";
-static char g_peer[10]       = "";
-static int  g_conn_triggered = 0;
+static int  g_tun_fd = -1;
+static char g_fec_mode[16] = "OFDM.2500.55";   /* default; set by init() */
+
+/* ProtocolState/ProtocolMode are declared in ARDOPC.h. */
 
 /*
- * Initialise the TUN/ARQ bridge.
+ * Initialise the TUN/FEC bridge.
  * @tun_fd    — file descriptor returned by tun_open()
- * @iss       — non-zero if this instance should initiate the ARQ connect
- * @mycall    — local callsign (already copied into Callsign[] by main)
- * @peer      — target callsign for ISS connect request
+ * @fec_mode  — ARDOP FEC mode string (e.g. "OFDM.2500.55", "OFDM.500.55");
+ *              must be one of the entries in strAllDataModes[]
  */
-void tun_ardopc_init(int tun_fd, int iss, const char *mycall, const char *peer)
+void tun_ardopc_init(int tun_fd, const char *fec_mode)
 {
     g_tun_fd = tun_fd;
-    g_iss    = iss;
-    if (mycall) strncpy(g_mycall, mycall, sizeof(g_mycall) - 1);
-    if (peer)   strncpy(g_peer,   peer,   sizeof(g_peer)   - 1);
+    if (fec_mode && *fec_mode) {
+        strncpy(g_fec_mode, fec_mode, sizeof(g_fec_mode) - 1);
+        g_fec_mode[sizeof(g_fec_mode) - 1] = '\0';
+    }
+    ProtocolMode = FEC;
 }
 
 /*
  * Called by HostInterface.c::AddTagToDataAndSendToHost() in ARDOP_IP builds.
  *
- * Forwards ARQ-delivered data to the TUN interface if the content looks like
- * a valid IP packet (IPv4 or IPv6 version nibble, minimum 20 bytes).
- * Status strings sent with the "ARQ" tag (e.g. "[ConReq2500 > KD2MYS]") are
- * silently discarded — they start with a space, not an IP version byte.
+ * Forwards PHY-delivered data to the TUN interface if the content looks
+ * like a valid IP packet (IPv4 or IPv6 version nibble, minimum 20 bytes).
+ * We accept both "FEC" and "ARQ" tags — the latter survives during the
+ * Phase 6.1a/b transition while the ARQ path is still linked in but
+ * unused.  "ERR" (failed decode) and status strings are dropped.
  */
 void TUNDeliverToHost(UCHAR *data, const char *tag, int len)
 {
     if (g_tun_fd < 0 || len < 20)
         return;
-    if (strcmp(tag, "ARQ") != 0)
+    if (strcmp(tag, "FEC") != 0 && strcmp(tag, "ARQ") != 0)
         return;
     if ((data[0] & 0xF0) != 0x40 && (data[0] & 0xF0) != 0x60)
         return;
@@ -58,28 +66,36 @@ void TUNDeliverToHost(UCHAR *data, const char *tag, int len)
 /*
  * Replaces TCPHostPoll()/SerialHostPoll() in the ardopmain() event loop.
  *
- * On the first call in ISS mode, fires SendARQConnectRequest() — audio is
- * already initialised by this point (InitSound() runs before the loop).
- * On subsequent calls, reads one IP packet from TUN into the ARQ TX queue.
+ * Reads at most one IP packet from TUN per call, and hands it to
+ * StartFEC() for transmission.  Skips when the PHY is already transmitting
+ * or receiving so we don't clobber an in-flight frame.
  */
 void TUNHostPoll(void)
 {
-    /* ISS: fire the connect request exactly once */
-    if (g_iss && !g_conn_triggered)
-    {
-        g_conn_triggered = 1;
-        SendARQConnectRequest(g_mycall, g_peer);
+    if (g_tun_fd < 0)
         return;
-    }
 
-    if (g_tun_fd < 0 || bytDataToSendLength > 0)
+    /* Don't pull more data while we're mid-transmission or mid-receive:
+     * - FECSend with a non-empty buffer: previous frame still being emitted.
+     * - FECRcv: the PHY is decoding; cutting it off with a TX would corrupt
+     *   the in-flight receive. */
+    if (ProtocolState == FECSend && bytDataToSendLength > 0)
+        return;
+    if (ProtocolState == FECRcv)
         return;
 
     struct pollfd pfd = { .fd = g_tun_fd, .events = POLLIN };
     if (poll(&pfd, 1, 0) <= 0)
         return;
 
-    int len = tun_read(g_tun_fd, bytDataToSend, DATABUFFERSIZE);
-    if (len > 0)
-        bytDataToSendLength = len;
+    UCHAR buf[DATABUFFERSIZE];
+    int len = tun_read(g_tun_fd, buf, sizeof(buf));
+    if (len <= 0)
+        return;
+
+    /* Sanity: only encapsulate what looks like an IPv4/IPv6 packet. */
+    if (len < 20 || ((buf[0] & 0xF0) != 0x40 && (buf[0] & 0xF0) != 0x60))
+        return;
+
+    StartFEC(buf, len, g_fec_mode, /*intRepeats=*/0, /*blnSendID=*/FALSE);
 }

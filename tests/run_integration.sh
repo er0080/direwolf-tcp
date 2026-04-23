@@ -113,8 +113,6 @@ ip netns exec "$NS_A" "$ARDOP_IP" \
     --local-ip 10.0.0.1 \
     --peer-ip  10.0.0.2 \
     --tun-dev  ardop0 \
-    --iss \
-    --peer-call KD2MYS-2 \
     --bw 2500 \
     > "$LOG_DIR/integ-a.log" 2>&1 &
 PID_A=$!
@@ -136,7 +134,6 @@ ip netns exec "$NS_B" "$ARDOP_IP" \
     --local-ip 10.0.0.2 \
     --peer-ip  10.0.0.1 \
     --tun-dev  ardop1 \
-    --irs \
     --bw 2500 \
     > "$LOG_DIR/integ-b.log" 2>&1 &
 PID_B=$!

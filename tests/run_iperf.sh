@@ -81,14 +81,14 @@ ip netns add "$NS_B"
 ip netns exec "$NS_A" "$ARDOP_IP" \
     --audio "$DEV_A" --mycall KD2MYS-1 \
     --local-ip 10.0.0.1 --peer-ip 10.0.0.2 --tun-dev ardop0 \
-    --iss --peer-call KD2MYS-2 --bw 2500 \
+    --bw 2500 \
     > "$LOG_DIR/iperf-a.log" 2>&1 &
 PID_A=$!
 
 ip netns exec "$NS_B" "$ARDOP_IP" \
     --audio "$DEV_B" --mycall KD2MYS-2 \
     --local-ip 10.0.0.2 --peer-ip 10.0.0.1 --tun-dev ardop1 \
-    --irs --bw 2500 \
+    --bw 2500 \
     > "$LOG_DIR/iperf-b.log" 2>&1 &
 PID_B=$!
 

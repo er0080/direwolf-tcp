@@ -91,7 +91,7 @@ ip netns exec "$NS_A" "$ARDOP_IP" \
     --audio "$IC705_AUDIO" --mycall "$IC705_MYCALL" \
     --local-ip "$IC705_IP" --peer-ip "$IC7300_IP" \
     --tun-dev "$IC705_TUN" --mtu "$MTU" \
-    --iss --peer-call "$IC7300_MYCALL" --bw "$BANDWIDTH" \
+    --bw "$BANDWIDTH" \
     --civ-port "$IC705_CIV_PORT" --civ-addr "$IC705_CIV_ADDR" --civ-baud "$IC705_CIV_BAUD" \
     > "$LOG_DIR/rf-705.log" 2>&1 &
 PID_A=$!
@@ -100,7 +100,7 @@ ip netns exec "$NS_B" "$ARDOP_IP" \
     --audio "$IC7300_AUDIO" --mycall "$IC7300_MYCALL" \
     --local-ip "$IC7300_IP" --peer-ip "$IC705_IP" \
     --tun-dev "$IC7300_TUN" --mtu "$MTU" \
-    --irs --bw "$BANDWIDTH" \
+    --bw "$BANDWIDTH" \
     --civ-port "$IC7300_CIV_PORT" --civ-addr "$IC7300_CIV_ADDR" --civ-baud "$IC7300_CIV_BAUD" \
     > "$LOG_DIR/rf-7300.log" 2>&1 &
 PID_B=$!

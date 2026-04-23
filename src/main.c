@@ -32,7 +32,7 @@ extern UCHAR                 PTTOffCmdLen;
 extern HANDLE                hCATDevice;
 
 void ardopmain(void);
-void tun_ardopc_init(int tun_fd, int iss, const char *mycall, const char *peer);
+void tun_ardopc_init(int tun_fd, const char *fec_mode);
 
 /* ── CI-V PTT frame builder ──────────────────────────────────────────────── */
 
@@ -113,11 +113,9 @@ static void usage(const char *prog)
         "  --tun-dev  NAME   TUN interface name (default: ardop0)\n"
         "  --mtu      N      MTU in bytes (default: 1460)\n"
         "\n"
-        "ARQ role:\n"
-        "  --iss             Initiate connection; requires --peer-call\n"
-        "  --irs             Listen for connection (default)\n"
-        "  --peer-call CALL  Peer callsign (required with --iss)\n"
+        "FEC mode:\n"
         "  --bw   BW         Bandwidth Hz: 200|500|2500 (default: 2500)\n"
+        "                    Selects the OFDM FEC mode (OFDM.{BW}.55).\n"
         "\n"
         "CI-V radio control:\n"
         "  --civ-port PORT   Serial port (e.g. /dev/ic_705_a)\n"
@@ -133,29 +131,24 @@ int main(int argc, char *argv[])
     /* Defaults */
     const char *audio    = NULL;
     const char *mycall   = NULL;
-    const char *peer_call = NULL;
     const char *local_ip = "10.0.0.1";
     const char *peer_ip  = "10.0.0.2";
     const char *tun_dev  = "ardop0";
     const char *civ_port = NULL;
     int         civ_baud = 115200;
     uint8_t     civ_addr = 0;
-    int         iss      = 0;
     int         mtu      = 1460;
     int         bw       = 2;   /* XB2500 — 2500 Hz */
 
     static struct option long_opts[] = {
         { "audio",     required_argument, 0, 'a' },
         { "mycall",    required_argument, 0, 'm' },
-        { "peer-call", required_argument, 0, 'p' },
         { "local-ip",  required_argument, 0, 'l' },
         { "peer-ip",   required_argument, 0, 'r' },
         { "tun-dev",   required_argument, 0, 'd' },
         { "civ-port",  required_argument, 0, 'P' },
         { "civ-addr",  required_argument, 0, 'A' },
         { "civ-baud",  required_argument, 0, 'B' },
-        { "iss",       no_argument,       0, 'I' },
-        { "irs",       no_argument,       0, 'R' },
         { "bw",        required_argument, 0, 'w' },
         { "mtu",       required_argument, 0, 'M' },
         { "help",      no_argument,       0, 'h' },
@@ -168,15 +161,12 @@ int main(int argc, char *argv[])
         switch (c) {
         case 'a': audio     = optarg;          break;
         case 'm': mycall    = optarg;          break;
-        case 'p': peer_call = optarg;          break;
         case 'l': local_ip  = optarg;          break;
         case 'r': peer_ip   = optarg;          break;
         case 'd': tun_dev   = optarg;          break;
         case 'P': civ_port  = optarg;          break;
         case 'A': civ_addr  = (uint8_t)strtol(optarg, NULL, 16); break;
         case 'B': civ_baud  = atoi(optarg);    break;
-        case 'I': iss       = 1;               break;
-        case 'R': iss       = 0;               break;
         case 'w': bw        = bw_index(optarg); break;
         case 'M': mtu       = atoi(optarg);    break;
         case 'h': usage(argv[0]); return 0;
@@ -192,10 +182,6 @@ int main(int argc, char *argv[])
         fprintf(stderr, "ardop-ip: --mycall is required\n");
         usage(argv[0]); return 1;
     }
-    if (iss && !peer_call) {
-        fprintf(stderr, "ardop-ip: --iss requires --peer-call\n");
-        usage(argv[0]); return 1;
-    }
     if (civ_port && civ_addr == 0) {
         fprintf(stderr, "ardop-ip: --civ-port requires --civ-addr\n");
         usage(argv[0]); return 1;
@@ -208,6 +194,15 @@ int main(int argc, char *argv[])
     strncpy(PlaybackDevice, audio,  79);
     ARQBandwidth = (enum _ARQBandwidth)bw;
     UseKISS      = FALSE;
+
+    /* FEC mode string: pick from --bw value. */
+    const char *fec_mode;
+    switch (bw) {
+    case 0:  fec_mode = "OFDM.200.55";  break;
+    case 1:  fec_mode = "OFDM.500.55";  break;
+    case 2:
+    default: fec_mode = "OFDM.2500.55"; break;
+    }
 
     /* ── CI-V PTT setup ─────────────────────────────────────────────────── */
 
@@ -232,7 +227,7 @@ int main(int argc, char *argv[])
     tun_configure(tun_fd, tun_dev, local_ip, peer_ip, mtu);
     printf("TUN: %s  %s <-> %s  MTU %d\n", tun_dev, local_ip, peer_ip, mtu);
 
-    tun_ardopc_init(tun_fd, iss, mycall, peer_call ? peer_call : "");
+    tun_ardopc_init(tun_fd, fec_mode);
 
     /* ── Signal handlers ────────────────────────────────────────────────── */
 
@@ -243,8 +238,7 @@ int main(int argc, char *argv[])
     sigaction(SIGHUP,  &act, NULL);
     sigaction(SIGPIPE, &act, NULL);
 
-    printf("ardop-ip: %s  %s  %s mode\n",
-           mycall, audio, iss ? "ISS" : "IRS");
+    printf("ardop-ip: %s  %s  FEC %s\n", mycall, audio, fec_mode);
 
     ardopmain();
 
