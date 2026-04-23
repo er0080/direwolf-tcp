@@ -706,16 +706,20 @@ void ardopmain()
 
 	tmrPollOBQueue = Now + 10000;
 
+#ifdef ARDOP_IP
+	/* Phase 6.1b: ardop-ip is pure FEC datagram.  Never enter ARQ mode. */
+	ProtocolMode = FEC;
+#else
 	ProtocolMode = ARQ;
+#endif
 
 	while(!blnClosing)
 	{
 #ifdef ARDOP_IP
 		/* Pre-poll TUN so bytDataToSendLength is up-to-date before any
-		 * received ARQ frame is processed.  Without this, AutoBreak's
-		 * `bytDataToSendLength > 0` check sees a stale zero when the kernel
-		 * has just queued a reply (e.g. SYN-ACK) in the TUN buffer since
-		 * the previous loop tick — the IRS then ACKs instead of breaking. */
+		 * received frame is processed, so the FEC receive handler has
+		 * a fresh view of any kernel-queued reply when it decides to
+		 * deliver to TUN vs start a new TX. */
 		TUNHostPoll();
 #endif
 		PollReceivedSamples();
