@@ -188,10 +188,15 @@ PYEOF
 # wire rate before the token bucket throttles the next one.
 apply_rate_limit() {
     [[ "${RATE_LIMIT_BPS:-0}" -gt 0 ]] || return 0
+    # burst=4096 (8 MTUs): lets TCP get a good initial window without drops.
+    # latency=10s: queue limit = burst + rate*latency/8 = 4096+1500 = 5596 B ≈ 11 MTUs.
+    # This queues rather than drops packets, so TCP retransmits are rare and
+    # throughput converges smoothly to the rate limit.  KISS still only sees
+    # frames as fast as the token bucket allows, keeping the radio gaps intact.
     ip netns exec "$NS_A" tc qdisc add dev "$IFACE_A" root tbf \
-        rate "${RATE_LIMIT_BPS}bit" burst 1024 latency 1s 2>/dev/null \
+        rate "${RATE_LIMIT_BPS}bit" burst 4096 latency 10s 2>/dev/null \
     || ip netns exec "$NS_A" tc qdisc change dev "$IFACE_A" root tbf \
-        rate "${RATE_LIMIT_BPS}bit" burst 1024 latency 1s 2>/dev/null \
+        rate "${RATE_LIMIT_BPS}bit" burst 4096 latency 10s 2>/dev/null \
     || { log "  WARNING: tc tbf unavailable — bulk may collide without rate limit"; return 0; }
     log "  tc tbf rate limit: ${RATE_LIMIT_BPS} bps on ${NS_A}/${IFACE_A}"
 }
@@ -316,8 +321,17 @@ test_bulk() {
     local bytes=$(( BULK_KB * 1024 ))
     apply_rate_limit
     local recv_file="$TMP_DIR/recv-${label}"
-    # Generous timeout: 32 KB at 800 bps ≈ 328 s; add 25% headroom
-    local xfer_timeout=$(( bytes * 10 / 800 * 12 / 10 + 60 ))
+
+    # xfer_timeout: must cover the full drain time at the SLOWER of the measured
+    # link rate (800 bps) or the tc tbf rate limit.  With tc tbf active the sender
+    # nc may exit quickly (after writing to the socket buffer) while the kernel's
+    # orphaned TCP socket keeps draining through the rate limiter — the drain loop
+    # must wait at least this long, not a fixed 60 s.
+    local effective_bps=800
+    if (( RATE_LIMIT_BPS > 0 && RATE_LIMIT_BPS < effective_bps )); then
+        effective_bps=$RATE_LIMIT_BPS
+    fi
+    local xfer_timeout=$(( bytes * 8 / effective_bps * 15 / 10 + 120 ))
 
     # Start receiver first; -N causes it to exit when sender closes
     timeout "$xfer_timeout" ip netns exec "$NS_B" nc -l -p "$BULK_PORT" -N \
@@ -326,14 +340,18 @@ test_bulk() {
     sleep 1  # ensure listener is bound before sender connects
 
     local t0=$SECONDS
+    # nc -w uses xfer_timeout (not 120 s) so it doesn't time out during the
+    # slow drain phase when the kernel is still flushing the send buffer
     ip netns exec "$NS_A" bash -c \
         "dd if=/dev/urandom bs=${bytes} count=1 2>/dev/null | \
-         timeout ${xfer_timeout} nc -N -w 120 ${IP_B} ${BULK_PORT}" \
+         timeout ${xfer_timeout} nc -N -w ${xfer_timeout} ${IP_B} ${BULK_PORT}" \
         >/dev/null 2>&1 || true
 
-    # After sender exits, wait for receiver to drain (up to 60 s extra)
+    # Wait for receiver to exit on its own (it does so when it receives the FIN
+    # after all bytes arrive).  Bound by xfer_timeout — the same window used for
+    # the sender — so the orphaned kernel socket has time to finish draining.
     local waited=0
-    while kill -0 "$recv_pid" 2>/dev/null && (( waited < 60 )); do
+    while kill -0 "$recv_pid" 2>/dev/null && (( waited < xfer_timeout )); do
         sleep 2; (( waited += 2 ))
     done
     kill "$recv_pid" 2>/dev/null || true
