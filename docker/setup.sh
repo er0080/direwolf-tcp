@@ -20,12 +20,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "run as root: sudo $0"
 
 # ── 1. Docker ─────────────────────────────────────────────────────────────────
-if ! command -v docker &>/dev/null; then
-    log "installing docker.io..."
-    apt-get update -q && apt-get install -y docker.io
-    systemctl enable --now docker
-    log "docker installed"
-fi
+command -v docker &>/dev/null || die "docker not found — install docker.io first"
 docker info &>/dev/null || die "docker daemon not running (try: systemctl start docker)"
 
 # ── 2. Radio hardware check ───────────────────────────────────────────────────
