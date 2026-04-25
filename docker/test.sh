@@ -10,7 +10,7 @@ set -uo pipefail
 
 PEER_IP="10.0.0.2"
 LINK_TIMEOUT=180    # seconds to wait for the RF link to come up
-SSH_TIMEOUT=120     # per SSH/SCP test timeout (RF TCP is slow)
+SSH_TIMEOUT=300     # per SSH/SCP test timeout (RF handshake alone takes ~80s)
 HTTP_TIMEOUT=90     # per HTTP test timeout
 PASS=0; FAIL=0
 
@@ -76,9 +76,8 @@ fi
 log "--- SCP (/etc/hostname → ${PEER_IP}:/tmp/) ---"
 if xec "$SSH_TIMEOUT" scp $SSH_OPTS \
         /etc/hostname "root@${PEER_IP}:/tmp/hostname-from-a" 2>/dev/null; then
-    # Verify file arrived and is non-empty
-    remote=$(xec 30 ssh $SSH_OPTS "root@${PEER_IP}" \
-        "cat /tmp/hostname-from-a 2>/dev/null" 2>/dev/null || echo "")
+    # Verify file arrived on node-b via docker exec (avoids a second RF SSH round-trip)
+    remote=$(docker exec dwiface-node-b cat /tmp/hostname-from-a 2>/dev/null || echo "")
     if [[ -n "$remote" ]]; then
         pass "SCP: file arrived on node-b (content: '${remote}')"
     else

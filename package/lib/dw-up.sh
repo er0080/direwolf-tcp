@@ -12,6 +12,30 @@ LOG_DIR="/var/log/dw-iface"
 log()  { echo "$(date '+%H:%M:%S') [dw-iface up] $*"; }
 die()  { echo "ERROR: $*" >&2; exit 1; }
 
+# Resolve "plughw:CARD=NAME,DEV=N" to "plughw:cardnum,N" when /proc/asound
+# is unavailable (Docker containers).  On the host, /proc/asound exists and
+# ALSA resolves card names itself — return unchanged.
+resolve_alsa_device() {
+    local dev="$1"
+    # /proc/asound/ exists as an empty dir in Docker — check the card listing
+    # file, not just the directory, before letting ALSA resolve names itself.
+    [[ -f /proc/asound/cards ]] && { echo "$dev"; return; }
+    if [[ "$dev" =~ CARD=([^,]+)(,DEV=([0-9]+))? ]]; then
+        local card_name="${BASH_REMATCH[1]}"
+        local dev_num="${BASH_REMATCH[3]:-0}"
+        for card_dir in /sys/class/sound/card*/; do
+            if [[ -f "${card_dir}id" ]] && \
+               [[ "$(cat "${card_dir}id" 2>/dev/null)" == "$card_name" ]]; then
+                local card_num="${card_dir%/}"; card_num="${card_num##*/card}"
+                echo "plughw:${card_num},${dev_num}"
+                return
+            fi
+        done
+        die "ALSA card '$card_name' not found in /sys/class/sound/ — is the radio plugged in?"
+    fi
+    echo "$dev"
+}
+
 # ── Parse args ────────────────────────────────────────────────────────────────
 CONFIG="$DEFAULT_CONFIG"
 while [[ $# -gt 0 ]]; do
@@ -55,12 +79,17 @@ mkdir -p "$RUN_DIR" "$LOG_DIR"
     die "already running (PID $(cat "$RUN_DIR/direwolf.pid"))"
 
 # ── Generate direwolf config ─────────────────────────────────────────────────
+# Resolve ALSA card name to number when running in Docker (no /proc/asound)
+RESOLVED_AUDIO=$(resolve_alsa_device "$AUDIO_DEVICE")
+[[ "$RESOLVED_AUDIO" != "$AUDIO_DEVICE" ]] && \
+    log "ALSA: resolved $AUDIO_DEVICE → $RESOLVED_AUDIO"
+
 DW_CONF="$RUN_DIR/direwolf.conf"
 cat > "$DW_CONF" <<EOF
 AGWPORT 0
 KISSPORT ${KISS_PORT}
 
-ADEVICE ${AUDIO_DEVICE}
+ADEVICE ${RESOLVED_AUDIO}
 ARATE   ${AUDIO_RATE:-48000}
 
 ${PTT:+PTT ${PTT}}
@@ -96,7 +125,7 @@ nc -z localhost "$KISS_PORT" 2>/dev/null || die "direwolf KISS port never opened
 
 # ── Start tncattach ───────────────────────────────────────────────────────────
 log "starting tncattach (mtu ${MTU})"
-tncattach localhost "$KISS_PORT" --mtu "$MTU" --noipv6 -v \
+tncattach -T -H localhost -P "$KISS_PORT" --mtu "$MTU" --noipv6 -v \
     >> "$LOG_DIR/tncattach.log" 2>&1 &
 echo $! > "$RUN_DIR/tncattach.pid"
 

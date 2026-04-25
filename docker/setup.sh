@@ -45,7 +45,29 @@ fi
 (( missing == 0 )) && log "all radio devices present" \
     || log "WARNING: $missing device(s) missing — check USB connections before starting containers"
 
-# ── 3. SSH test keys ─────────────────────────────────────────────────────────
+# ── 3. Resolve PTT device symlinks ───────────────────────────────────────────
+# Docker's devices: section does not follow symlinks on the host — it needs a
+# real device node. Resolve udev symlinks to their underlying tty* paths and
+# write docker/.env so compose picks them up automatically.
+log "resolving PTT device symlinks..."
+ENV_FILE="$SCRIPT_DIR/.env"
+if [[ -e /dev/ic_705_b ]]; then
+    IC705_RESOLVED=$(readlink -f /dev/ic_705_b)
+    log "  IC705_PTT=$IC705_RESOLVED"
+else
+    IC705_RESOLVED=/dev/ic_705_b
+    log "  WARNING: /dev/ic_705_b not found, using as-is"
+fi
+if [[ -e /dev/ic_7300 ]]; then
+    IC7300_RESOLVED=$(readlink -f /dev/ic_7300)
+    log "  IC7300_PTT=$IC7300_RESOLVED"
+else
+    IC7300_RESOLVED=/dev/ic_7300
+    log "  WARNING: /dev/ic_7300 not found, using as-is"
+fi
+printf 'IC705_PTT=%s\nIC7300_PTT=%s\n' "$IC705_RESOLVED" "$IC7300_RESOLVED" > "$ENV_FILE"
+
+# ── 4. SSH test keys ─────────────────────────────────────────────────────────
 # These keys are used for container-to-container SSH authentication only.
 # They are gitignored and have no access to real systems.
 KEY_DIR="$SCRIPT_DIR/keys"
@@ -59,7 +81,7 @@ if [[ ! -f "$KEY_DIR/id_ed25519" ]]; then
 fi
 log "SSH keys ready"
 
-# ── 4. Build image ────────────────────────────────────────────────────────────
+# ── 5. Build image ────────────────────────────────────────────────────────────
 # The Dockerfile builds tncattach from source, builds the dw-iface .deb from
 # package/, then installs both into the runtime image. A successful image build
 # means 'dpkg -i dw-iface.deb' completed cleanly — the package is proven.

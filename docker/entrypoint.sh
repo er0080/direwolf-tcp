@@ -10,10 +10,17 @@
 set -euo pipefail
 log() { echo "[$(date '+%H:%M:%S')] node-${NODE_ROLE}: $*"; }
 
-# ── SSH authorized keys ───────────────────────────────────────────────────────
+# ── SSH keys (mounted read-only to staging path; copy into place) ─────────────
+KEYS=/run/dw-iface-keys
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
-[[ -f /root/.ssh/authorized_keys ]] && chmod 600 /root/.ssh/authorized_keys
-[[ -f /root/.ssh/id_ed25519 ]]      && chmod 600 /root/.ssh/id_ed25519
+if [[ -f "$KEYS/authorized_keys" ]]; then
+    cp "$KEYS/authorized_keys" /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+fi
+if [[ -f "$KEYS/id_ed25519" ]]; then
+    cp "$KEYS/id_ed25519" /root/.ssh/id_ed25519
+    chmod 600 /root/.ssh/id_ed25519
+fi
 
 # ── Bring up the TNC link via the installed dw-iface package ─────────────────
 log "calling dw-iface up"

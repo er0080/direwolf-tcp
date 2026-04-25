@@ -22,14 +22,14 @@ services:
     image: dwiface-node
     container_name: dwiface-node-a
     network_mode: "none"
-    cap_add:
-      - NET_ADMIN
-    # /dev/snd: whole ALSA tree — direwolf selects its card by name in config
+    # privileged: required so ALSA can validate card numbers via /proc/asound/.
+    # These containers talk directly to physical radio hardware — privileged
+    # access is appropriate for this test harness.
+    privileged: true
     volumes:
-      - /dev/snd:/dev/snd
       - ./config/node-a.conf:/etc/dw-iface/dw-iface.conf:ro
-      - ./keys/id_ed25519:/root/.ssh/id_ed25519:ro
-      - ./keys/id_ed25519.pub:/root/.ssh/authorized_keys:ro
+      - ./keys/id_ed25519:/run/dw-iface-keys/id_ed25519:ro
+      - ./keys/id_ed25519.pub:/run/dw-iface-keys/authorized_keys:ro
     devices:
       # IC-705 PTT via CI-V / USB-serial — host symlink maps to real ttyACM*
       - ${IC705_PTT:-/dev/ic_705_b}:/dev/ic_705_b
@@ -44,12 +44,10 @@ services:
     image: dwiface-node
     container_name: dwiface-node-b
     network_mode: "none"
-    cap_add:
-      - NET_ADMIN
+    privileged: true
     volumes:
-      - /dev/snd:/dev/snd
       - ./config/node-b.conf:/etc/dw-iface/dw-iface.conf:ro
-      - ./keys/id_ed25519.pub:/root/.ssh/authorized_keys:ro
+      - ./keys/id_ed25519.pub:/run/dw-iface-keys/authorized_keys:ro
     devices:
       # IC-7300 PTT via USB-serial
       - ${IC7300_PTT:-/dev/ic_7300}:/dev/ic_7300

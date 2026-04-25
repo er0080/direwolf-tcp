@@ -26,6 +26,7 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
         direwolf \
         iproute2 \
+        iputils-ping \
         netcat-openbsd \
         openssh-server \
         openssh-client \
