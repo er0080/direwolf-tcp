@@ -2,6 +2,9 @@
 # dw-iface up — bring up the TNC network interface
 set -euo pipefail
 
+# Ensure tncattach (installed to /usr/local/sbin) is on PATH even under sudo
+export PATH="/usr/local/sbin:/usr/local/bin:$PATH"
+
 DEFAULT_CONFIG="/etc/dw-iface/dw-iface.conf"
 RUN_DIR="/run/dw-iface"
 LOG_DIR="/var/log/dw-iface"

@@ -19,8 +19,10 @@ case "$1" in
         fi
 
         # Enable systemd service but do NOT start it (radio may not be connected)
-        if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
-            systemctl daemon-reload
+        # Enable service only when systemd is the active init (not in Docker/chroot)
+        if command -v systemctl >/dev/null 2>&1 \
+                && systemctl is-system-running >/dev/null 2>&1; then
+            systemctl daemon-reload 2>/dev/null || true
             systemctl enable dw-iface.service 2>/dev/null || true
             echo "dw-iface: service enabled — start with: sudo systemctl start dw-iface"
         fi

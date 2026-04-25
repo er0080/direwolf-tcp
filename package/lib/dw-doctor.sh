@@ -10,13 +10,16 @@ ISSUES=0
 echo "=== dw-iface doctor ==="
 
 # Required binaries
-for bin in direwolf tncattach ip nc; do
-    if command -v "$bin" &>/dev/null; then
-        ok "$bin found: $(command -v "$bin")"
-    else
-        bad "$bin not found (install: apt install ${bin/tncattach/})"
-    fi
+for bin in direwolf ip nc; do
+    command -v "$bin" &>/dev/null \
+        && ok "$bin found: $(command -v "$bin")" \
+        || bad "$bin not found — install: apt install $bin"
 done
+if command -v tncattach &>/dev/null; then
+    ok "tncattach found: $(command -v tncattach)"
+else
+    bad "tncattach not found — build from source: https://github.com/markqvist/tncattach"
+fi
 
 # direwolf version
 if command -v direwolf &>/dev/null; then

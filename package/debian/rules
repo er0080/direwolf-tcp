@@ -1,15 +1,13 @@
 #!/usr/bin/make -f
-# Debian package build rules for dw-iface
+# dw-iface is a pure shell package — nothing to compile.
+# tncattach is a runtime dependency installed separately (not in Ubuntu apt;
+# build from https://github.com/markqvist/tncattach or use the Docker stage).
 
 %:
 	dh $@
 
 override_dh_auto_build:
-	# Build tncattach from bundled source
-	$(MAKE) -C tncattach
+	@:
 
 override_dh_auto_install:
-	$(MAKE) -C .. install DESTDIR=$(CURDIR)/debian/dw-iface PREFIX=/usr
-
-override_dh_auto_clean:
-	$(MAKE) -C tncattach clean
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/dw-iface PREFIX=/usr

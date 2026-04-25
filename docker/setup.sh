@@ -6,9 +6,10 @@
 #
 # What this does:
 #   1. Installs docker.io if not present
-#   2. Loads the snd_aloop kernel module (ALSA loopback for audio cross-wiring)
+#   2. Checks that the radio USB devices are present
 #   3. Generates a test SSH key pair in docker/keys/ (gitignored)
-#   4. Builds the Docker image
+#   4. Builds the Docker image — this also builds and installs the dw-iface
+#      .deb inside the image, proving the packaging end-to-end
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,40 +26,55 @@ if ! command -v docker &>/dev/null; then
     systemctl enable --now docker
     log "docker installed"
 fi
+docker info &>/dev/null || die "docker daemon not running (try: systemctl start docker)"
 
-# ── 2. ALSA loopback ─────────────────────────────────────────────────────────
-# snd_aloop creates two virtual ALSA cards:
-#   plughw:Loopback,0 TX → plughw:Loopback,1 RX  (node-a → node-b)
-#   plughw:Loopback,1 TX → plughw:Loopback,0 RX  (node-b → node-a)
-if ! aplay -l 2>/dev/null | grep -q Loopback; then
-    log "loading snd_aloop..."
-    modprobe snd_aloop
-    # persist across reboots
-    echo "snd_aloop" >> /etc/modules-load.d/dw-iface.conf 2>/dev/null || true
+# ── 2. Radio hardware check ───────────────────────────────────────────────────
+log "checking radio devices..."
+missing=0
+for dev in /dev/ic_705_b /dev/ic_7300; do
+    if [[ -e "$dev" ]]; then
+        log "  $dev OK (→ $(readlink -f "$dev"))"
+    else
+        log "  WARNING: $dev not found — is the radio plugged in?"
+        (( missing++ )) || true
+    fi
+done
+if ! aplay -l 2>/dev/null | grep -q CODEC_705; then
+    log "  WARNING: IC-705 audio (CODEC_705) not found in aplay -l"
+    (( missing++ )) || true
 fi
-aplay -l 2>/dev/null | grep -q Loopback || die "snd_aloop did not create Loopback devices"
-log "ALSA loopback ready"
+if ! aplay -l 2>/dev/null | grep -q CODEC_7300; then
+    log "  WARNING: IC-7300 audio (CODEC_7300) not found in aplay -l"
+    (( missing++ )) || true
+fi
+(( missing == 0 )) && log "all radio devices present" \
+    || log "WARNING: $missing device(s) missing — check USB connections before starting containers"
 
 # ── 3. SSH test keys ─────────────────────────────────────────────────────────
-# These keys are for container-to-container authentication only.
+# These keys are used for container-to-container SSH authentication only.
 # They are gitignored and have no access to real systems.
 KEY_DIR="$SCRIPT_DIR/keys"
 mkdir -p "$KEY_DIR"
 if [[ ! -f "$KEY_DIR/id_ed25519" ]]; then
     log "generating test SSH key pair in docker/keys/"
-    ssh-keygen -t ed25519 -f "$KEY_DIR/id_ed25519" -N "" -C "dw-iface-test-$(date +%Y%m%d)" -q
+    ssh-keygen -t ed25519 -f "$KEY_DIR/id_ed25519" -N "" \
+        -C "dw-iface-test-only-$(date +%Y%m%d)" -q
     chmod 600 "$KEY_DIR/id_ed25519"
     chmod 644 "$KEY_DIR/id_ed25519.pub"
 fi
 log "SSH keys ready"
 
 # ── 4. Build image ────────────────────────────────────────────────────────────
-log "building Docker image (this takes a few minutes the first time)..."
+# The Dockerfile builds tncattach from source, builds the dw-iface .deb from
+# package/, then installs both into the runtime image. A successful image build
+# means 'dpkg -i dw-iface.deb' completed cleanly — the package is proven.
+log "building Docker image..."
+log "(stage 2 builds dw-iface.deb from package/ and installs it — watch for errors)"
 cd "$SCRIPT_DIR"
 docker compose build
 
 log ""
-log "Setup complete. Start the link with:"
-log "  sudo docker compose -f docker/compose.yml up -d"
-log "Run tests with:"
-log "  sudo docker/test.sh"
+log "Setup complete."
+log "Start the link:  sudo docker compose -f docker/compose.yml up -d"
+log "Run tests:       sudo docker/test.sh"
+log "Stop:            sudo docker/teardown.sh"
