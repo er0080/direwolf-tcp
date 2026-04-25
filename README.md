@@ -176,6 +176,7 @@ Expected throughput at 1200 baud AFSK is approximately 100–150 bytes/sec effec
 sudo ./scripts/rf-setup.sh      # start Direwolf × 2, namespaces, tncattach × 2
 sudo ./scripts/rf-test.sh       # pre-flight checks + ping both directions
 sudo ./scripts/rf-teardown.sh   # stop everything and clean up namespaces
+sudo ./scripts/rf-burnin.sh     # mixed-workload burn-in (ping, HTTP, interactive, bulk TCP)
 ```
 
 **Port assignments:**
@@ -211,13 +212,20 @@ ip netns exec ns_b ping -c 10 -i 3 10.0.0.1   # B→A
 
 ### PERSIST, SLOTTIME, and DWAIT for a dedicated P2P link
 
-Direwolf's default CSMA algorithm (p-persistent) draws a random number each slot and transmits only if it beats PERSIST. This is designed to reduce collisions on **shared** channels with many stations. On a **dedicated** point-to-point link there is no other traffic to collide with, so the random backoff only adds latency.
+Direwolf's CSMA algorithm (p-persistent) draws a random number each slot and transmits only if it beats PERSIST. The right values depend on your setup.
 
-Setting `PERSIST 255` tells Direwolf to transmit immediately whenever it detects the channel is clear — no random wait. `SLOTTIME 1` (10 ms) adds just enough jitter that if both ends see the channel go clear at the exact same moment (possible during TCP bulk transfers with simultaneous data and ACK) they won't both fire in the same audio sample.
+**Tuned values for the IC-705 / IC-7300 single-machine configuration** (derived by OFAT sweep — `scripts/dw-tune-sweep.sh`):
 
-On a single machine with two radios sharing the same audio timing, both ends can see DCD drop at almost exactly the same instant. `DWAIT` adds an asymmetric per-station delay (units of 10 ms) after DCD drops before CSMA kicks in — giving one radio a guaranteed head start. In the IC-705 / IC-7300 configs, IC-7300 uses `DWAIT 0` (transmits immediately when clear) and IC-705 uses `DWAIT 5` (waits 50 ms). This ensures IC-7300 always wins the channel for its replies before IC-705 can queue the next ping.
+| Radio | DWAIT | PERSIST | SLOTTIME |
+|-------|-------|---------|----------|
+| IC-705 | 25 (250 ms) | 127 | 5 (50 ms) |
+| IC-7300 | 5 (50 ms) | 127 | 5 (50 ms) |
 
-For a **shared** channel, lower PERSIST (e.g. 63) and increase SLOTTIME (e.g. 10–20) to reduce collision probability.
+`PERSIST 127` (≈50% TX probability per slot) and `SLOTTIME 5` (50 ms slots) reduced frame loss from 81% at the defaults (PERSIST 255 / SLOTTIME 1) to 6% in sweep testing. `PERSIST 255 + SLOTTIME 1` causes both radios to key the instant the channel clears, producing systematic head-on collisions.
+
+**DWAIT asymmetry and the TXDELAY collision window**: `TXDELAY 20` means the transmitting radio raises PTT 200 ms before audio starts. During those 200 ms, the channel is silent — the other radio's DCD drops and it may decide the channel is free. If it keys immediately it will transmit into the upcoming audio burst. IC-7300 uses `DWAIT 5` (50 ms dead time after DCD drop) to ensure it can't key during IC-705's TXDELAY window. IC-705 uses `DWAIT 25` (250 ms) to let IC-7300 win the reply slot first, preventing both from trying to start new transmissions simultaneously after a frame exchange.
+
+For a **shared** channel with many stations, lower PERSIST (e.g. 63) and increase SLOTTIME (e.g. 10–20) to reduce collision probability.
 
 ### PTT hardware options
 
@@ -258,23 +266,41 @@ For better HF performance outside Direwolf, **ARDOP** (`ardopc`) is the practica
 
 ### KISS queuing and flow control
 
-KISS is a dumb pipe with no flow control — tncattach can push frames into the KISS socket faster than the radio can transmit them. For batch tests, use a ping interval that exceeds the RTT (see above). For continuous traffic, rate-limit the TNC interface with Linux `tc` to prevent the kernel from queueing faster than the radio link can drain:
+KISS is a dumb pipe with no flow control — tncattach can push frames into the KISS socket faster than the radio can transmit them. For batch tests, use a ping interval that exceeds the RTT (see above). For bulk transfers, rate-limit the TNC interface with Linux `tc`:
 
 ```bash
 # Limit to ~1200 bit/s to match 2400 baud QPSK effective payload throughput
-ip netns exec ns_a tc qdisc add dev tnc0 root tbf rate 1200bit burst 512 latency 500ms
-ip netns exec ns_b tc qdisc add dev tnc1 root tbf rate 1200bit burst 512 latency 500ms
+ip netns exec ns_a tc qdisc add dev tnc0 root tbf rate 1200bit burst 4096 latency 10s
 ```
 
-TCP applications naturally self-limit via congestion control and do not require this workaround. ICMP (ping) does not self-limit.
+The `burst` and `latency` parameters determine the queue depth (`queue ≈ burst + rate×latency/8`). With `burst 4096 latency 10s` the queue holds ~5.6 KB (≈11 MTUs at 508 B MTU) — enough for TCP to build a usable congestion window without drops. Too-small values (`burst 512 latency 500ms` → ~1.2 KB, 2.5 MTUs) cause constant TCP retransmits that waste most of the link budget.
+
+**TCP self-limits, but rate limiting is still needed for bulk transfers.** Without a rate limit, back-to-back TCP frames leave no gaps between transmissions. The receiving radio's DCD drops in the 200 ms TXDELAY silence before each burst — making the channel look clear — and it keys up into the sender's next frame. A 1200 bps token bucket creates ~3.4 s gaps between 508-byte frames, giving the remote side time to send ACKs without colliding.
+
+ICMP (ping) does not self-limit and will flood the KISS queue if sent faster than the link can drain.
+
+### Burn-in testing
+
+`scripts/rf-burnin.sh` runs a sustained mixed workload for a configurable duration:
+
+```bash
+sudo scripts/rf-burnin.sh --duration 30          # 30-minute run (default)
+sudo scripts/rf-burnin.sh --duration 10 --bulk-kb 32   # quick smoke test
+```
+
+Each iteration runs: ICMP ping health check → HTTP GET (~4 KB) → 5 interactive TCP exchanges → bulk TCP transfer (every 3rd iteration). All calls are wrapped in explicit timeouts; no test can hang the script. Results are logged to `logs/burnin/` as both human-readable `.log` and machine-readable `.csv`.
+
+Exit codes: `0` = pass (<5% failure), `1` = marginal (5–20%), `2` = fail (>20%), `3` = setup error.
 
 ### Expected performance
 
-At 2400 baud QPSK with PERSIST 255 / SLOTTIME 1 / asymmetric DWAIT:
+At 2400 baud QPSK with PERSIST 127 / SLOTTIME 5 / asymmetric DWAIT (tuned values):
 
-- **RTT**: ~1700 ms (two back-to-back ~860 ms transmissions including TXDELAY 20 + TXTAIL 10, no CSMA wait)
-- **ICMP ping**: must use `-i 3` or longer to avoid transmit queuing; at 1 s intervals packets stack up and collide
-- **TCP**: handles retransmission at the transport layer; file transfers and SSH sessions work reliably despite occasional frame loss at the radio layer
+- **RTT**: ~1800–2000 ms (two ~860 ms transmissions + CSMA slot jitter)
+- **HTTP GET (~4 KB)**: ~22 s (≈1400 bps), consistent across iterations
+- **Interactive TCP (100 B exchanges)**: 5/5 in ~50–70 s
+- **Bulk TCP (32 KB at 1200 bps rate limit)**: completes in ~220 s at ~900 bps goodput after TCP congestion control overhead
+- **Frame loss**: ~6% under typical conditions with tuned CSMA values (vs 81% at defaults)
 
 ---
 
