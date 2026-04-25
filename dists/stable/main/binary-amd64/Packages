@@ -1,0 +1,27 @@
+Package: dw-iface
+Version: 0.1.0-1
+Architecture: amd64
+Maintainer: Eric L. Parent <eric.parent.314159@gmail.com>
+Installed-Size: 43
+Depends: direwolf (>= 1.7), iproute2, netcat-openbsd
+Recommends: tncattach
+Filename: pool/main/d/dw-iface/dw-iface_0.1.0-1_amd64.deb
+Size: 8580
+MD5sum: 31eec4e21cea96f79d07666ff2e237a5
+SHA1: 2a84dcd9469009f85d96f7d2306f323cf4dbd673
+SHA256: 087c44c7824bb260f507368ad810629e7bfa1a0ab644f3c045c9906ffd3f7994
+Section: hamradio
+Priority: optional
+Homepage: https://github.com/er0080/direwolf-tcp
+Description: Direwolf TNC network interface manager
+ dw-iface packages Direwolf and tncattach into a single command that brings
+ up a point-to-point IP link over any radio supported by Direwolf's AX.25
+ modem (1200 baud AFSK or 2400 baud QPSK).
+ .
+ A single config file controls the audio device, PTT method, callsign,
+ IP address, and CSMA parameters.  'dw-iface up' starts Direwolf, attaches
+ tncattach, and configures the network interface.  A systemd unit manages
+ the service across reboots.
+ .
+ Tested with Icom IC-705 and IC-7300 on Ubuntu 24.04.
+

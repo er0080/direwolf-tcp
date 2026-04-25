@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>dw-iface apt repository</title></head>
+<body>
+<h1>dw-iface</h1>
+<p>Stand up one side of a Direwolf RF link with a single apt install.</p>
+<pre>
+echo "deb [trusted=yes] https://er0080.github.io/direwolf-tcp stable main" \
+  | sudo tee /etc/apt/sources.list.d/dw-iface.list
+sudo apt update
+sudo apt install dw-iface
+</pre>
+<p>Latest: <strong>0.1.0-1</strong> &mdash; <a href="pool/main/d/dw-iface/dw-iface_0.1.0-1_amd64.deb">dw-iface_0.1.0-1_amd64.deb</a></p>
+</body>
+</html>
