@@ -1,0 +1,114 @@
+name: Build and publish deb
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y debhelper dpkg-dev apt-utils gcc make
+
+      - name: Build tncattach
+        run: cd tncattach && make
+
+      - name: Build dw-iface .deb
+        id: build
+        run: |
+          # dpkg-buildpackage expects the source dir named package-version
+          VERSION=$(dpkg-parsechangelog -l package/debian/changelog -S Version)
+          UPSTREAM=${VERSION%-*}
+          SRC="dw-iface-${UPSTREAM}"
+          cp -r package "$SRC"
+          cd "$SRC"
+          dpkg-buildpackage -b -us -uc -d
+          cd ..
+          DEB=$(ls dw-iface_*.deb)
+          echo "deb=$DEB" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout gh-pages (create orphan branch if missing)
+        run: |
+          git fetch origin gh-pages 2>/dev/null || true
+          if git show-ref --verify refs/remotes/origin/gh-pages 2>/dev/null; then
+            git worktree add gh-pages-out origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages gh-pages-out
+          fi
+
+      - name: Update apt repository
+        env:
+          REPO_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          DEB: ${{ steps.build.outputs.deb }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          DEST="gh-pages-out/pool/main/d/dw-iface"
+          mkdir -p "$DEST"
+          cp "$DEB" "$DEST/"
+
+          mkdir -p gh-pages-out/dists/stable/main/binary-amd64
+          cd gh-pages-out
+
+          dpkg-scanpackages --multiversion pool/ \
+            > dists/stable/main/binary-amd64/Packages
+          gzip -k -f dists/stable/main/binary-amd64/Packages
+
+          apt-ftparchive release \
+            -o APT::FTPArchive::Release::Origin="dw-iface" \
+            -o APT::FTPArchive::Release::Label="dw-iface" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64" \
+            -o APT::FTPArchive::Release::Components="main" \
+            dists/stable > dists/stable/Release
+
+          cat > index.html << HTML
+          <!DOCTYPE html>
+          <html lang="en">
+          <head><meta charset="utf-8"><title>dw-iface apt repository</title></head>
+          <body>
+          <h1>dw-iface</h1>
+          <p>Stand up one side of a Direwolf RF link with a single apt install.</p>
+          <pre>
+          echo "deb [trusted=yes] ${REPO_URL} stable main" \\
+            | sudo tee /etc/apt/sources.list.d/dw-iface.list
+          sudo apt update
+          sudo apt install dw-iface
+          </pre>
+          <p>Latest: <strong>${VERSION}</strong> &mdash; <a href="pool/main/d/dw-iface/${DEB}">${DEB}</a></p>
+          </body>
+          </html>
+          HTML
+
+      - name: Commit and push gh-pages
+        run: |
+          cd gh-pages-out
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Publish ${{ steps.build.outputs.deb }}" || echo "nothing to commit"
+          git push origin HEAD:gh-pages
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            "${{ steps.build.outputs.deb }}" \
+            --title "dw-iface ${{ github.ref_name }}" \
+            --generate-notes
