@@ -11,12 +11,15 @@
 #   --mtu-compare  binary-search for PMTU, then compare bulk goodput at two
 #                  TCP MSS settings (default vs halved) via ip route advmss
 #   --bbr          switch both namespaces to BBR congestion control for the run
+#   --rate-limit N rate-limit bulk sender with tc tbf at N bps (default 1200)
+#                  prevents KISS queue flooding that causes IC-7300 to collide
+#                  with IC-705 during TXDELAY silence windows; set 0 to disable
 #
 # All network calls are wrapped in explicit timeout; no test can hang the script.
 #
 # Usage: sudo scripts/rf-burnin.sh [--duration MIN] [--bulk-kb KB]
-#                                   [--mtu-compare] [--bbr]
-#        Defaults: --duration 30 --bulk-kb 32
+#                                   [--mtu-compare] [--bbr] [--rate-limit N]
+#        Defaults: --duration 30 --bulk-kb 32 --rate-limit 1200
 #
 # Exit codes:
 #   0   pass     (<5% test failure rate)
@@ -47,14 +50,16 @@ DURATION_MIN=30
 BULK_KB=32
 MTU_COMPARE=0
 USE_BBR=0
+RATE_LIMIT_BPS=1200   # tc tbf rate on bulk sender; 0 = disabled
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --duration|-d)  DURATION_MIN="$2"; shift 2 ;;
-        --bulk-kb)      BULK_KB="$2";      shift 2 ;;
-        --mtu-compare)  MTU_COMPARE=1;     shift ;;
-        --bbr)          USE_BBR=1;         shift ;;
+        --duration|-d)  DURATION_MIN="$2";    shift 2 ;;
+        --bulk-kb)      BULK_KB="$2";         shift 2 ;;
+        --mtu-compare)  MTU_COMPARE=1;        shift ;;
+        --bbr)          USE_BBR=1;            shift ;;
+        --rate-limit)   RATE_LIMIT_BPS="$2";  shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -96,6 +101,8 @@ cleanup() {
     # Remove any /32 host routes added for the MTU comparison test
     ip netns exec "$NS_A" ip route del "${IP_B}/32" dev "$IFACE_A" 2>/dev/null || true
     ip netns exec "$NS_B" ip route del "${IP_A}/32" dev "$IFACE_B" 2>/dev/null || true
+    # Remove rate-limit qdisc if still in place
+    ip netns exec "$NS_A" tc qdisc del dev "$IFACE_A" root 2>/dev/null || true
     rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT INT TERM
@@ -168,6 +175,29 @@ PYEOF
         exit 3
     fi
     log "  Services ready: HTTP :${HTTP_PORT}  echo :${IACT_PORT} (socat=${HAVE_SOCAT})"
+}
+
+# ── Bulk sender rate limit (tc tbf) ──────────────────────────────────────────
+# Prevents KISS queue flooding during bulk transfers. Without this, IC-705
+# queues 64+ frames back-to-back; between each frame the TXDELAY creates
+# 200ms of silence during which IC-7300 (DWAIT=5) may key up to ACK —
+# then IC-705's audio starts and they collide. Throttling the input rate
+# creates natural gaps so IC-7300 can ACK without fighting for the channel.
+#
+# burst: must be >= MTU (508 B). 1024 B allows one full frame to drain at
+# wire rate before the token bucket throttles the next one.
+apply_rate_limit() {
+    [[ "${RATE_LIMIT_BPS:-0}" -gt 0 ]] || return 0
+    ip netns exec "$NS_A" tc qdisc add dev "$IFACE_A" root tbf \
+        rate "${RATE_LIMIT_BPS}bit" burst 1024 latency 1s 2>/dev/null \
+    || ip netns exec "$NS_A" tc qdisc change dev "$IFACE_A" root tbf \
+        rate "${RATE_LIMIT_BPS}bit" burst 1024 latency 1s 2>/dev/null \
+    || { log "  WARNING: tc tbf unavailable — bulk may collide without rate limit"; return 0; }
+    log "  tc tbf rate limit: ${RATE_LIMIT_BPS} bps on ${NS_A}/${IFACE_A}"
+}
+
+remove_rate_limit() {
+    ip netns exec "$NS_A" tc qdisc del dev "$IFACE_A" root 2>/dev/null || true
 }
 
 # ── Congestion control ─────────────────────────────────────────────────────────
@@ -279,9 +309,12 @@ test_interactive() {
 # ── Test: Bulk TCP transfer (SCP-like) ───────────────────────────────────────
 # Sends BULK_KB random bytes over a fresh TCP connection; measures wire goodput.
 # Uses nc -N (half-close on EOF) so both sides exit promptly when done.
+# Applies tc tbf rate limit before the transfer and removes it after so the
+# KISS queue can't be flooded faster than the radio can drain it.
 test_bulk() {
     local label="${1:-default}"
     local bytes=$(( BULK_KB * 1024 ))
+    apply_rate_limit
     local recv_file="$TMP_DIR/recv-${label}"
     # Generous timeout: 32 KB at 800 bps ≈ 328 s; add 25% headroom
     local xfer_timeout=$(( bytes * 10 / 800 * 12 / 10 + 60 ))
@@ -319,6 +352,7 @@ test_bulk() {
     elif (( recv_bytes >= bytes * 9 / 10 )); then result="partial"
     else result="fail"; fi
 
+    remove_rate_limit
     log "  bulk(${label}): ${recv_bytes}/${bytes}B in ${elapsed}s = ${bps} bps [${result}]"
     record "bulk_${label}" "$result" "$elapsed" "$bps" "recv=${recv_bytes}/${bytes}B elapsed=${elapsed}s"
     [[ "$result" != "fail" ]]
@@ -399,7 +433,7 @@ run_mtu_compare() {
 # ── Main burn-in loop ──────────────────────────────────────────────────────────
 main() {
     log "=== RF burn-in start ==="
-    log "  duration=${DURATION_MIN}min  bulk=${BULK_KB}KB  mtu_compare=${MTU_COMPARE}  bbr=${USE_BBR}"
+    log "  duration=${DURATION_MIN}min  bulk=${BULK_KB}KB  rate_limit=${RATE_LIMIT_BPS}bps  mtu_compare=${MTU_COMPARE}  bbr=${USE_BBR}"
     log "  log: $LOG"
     log "  csv: $CSV"
     log ""
