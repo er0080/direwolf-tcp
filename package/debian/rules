@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+# Debian package build rules for dw-iface
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Build tncattach from bundled source
+	$(MAKE) -C tncattach
+
+override_dh_auto_install:
+	$(MAKE) -C .. install DESTDIR=$(CURDIR)/debian/dw-iface PREFIX=/usr
+
+override_dh_auto_clean:
+	$(MAKE) -C tncattach clean

@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        # Stop and disable the service before removing files
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop dw-iface.service 2>/dev/null || true
+            systemctl disable dw-iface.service 2>/dev/null || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

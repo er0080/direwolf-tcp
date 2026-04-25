@@ -1,0 +1,50 @@
+name: dwiface
+
+# Both nodes communicate ONLY through the Direwolf audio link.
+# network_mode: none ensures there is no Docker bridge between them.
+# Audio is cross-wired via ALSA loopback (snd_aloop) on the host.
+# Run docker/setup.sh before starting to load snd_aloop and generate SSH keys.
+
+services:
+  node-a:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: dwiface-node
+    container_name: dwiface-node-a
+    network_mode: "none"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      NODE_ROLE:  a
+      NODE_IP:    10.0.0.1/30
+      ALSA_DEV:   plughw:Loopback,0
+      KISS_PORT:  "8001"
+      MYCALL:     N0CALL-1
+    volumes:
+      - ./keys/id_ed25519:/root/.ssh/id_ed25519:ro
+      - ./keys/id_ed25519.pub:/root/.ssh/authorized_keys:ro
+    restart: "no"
+
+  node-b:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: dwiface-node
+    container_name: dwiface-node-b
+    network_mode: "none"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      NODE_ROLE:  b
+      NODE_IP:    10.0.0.2/30
+      ALSA_DEV:   plughw:Loopback,1
+      KISS_PORT:  "8002"
+      MYCALL:     N0CALL-2
+    volumes:
+      - ./keys/id_ed25519.pub:/root/.ssh/authorized_keys:ro
+    restart: "no"

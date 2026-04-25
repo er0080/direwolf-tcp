@@ -1,0 +1,7 @@
+# sshd config for dw-iface test containers
+# Dropped into /etc/ssh/sshd_config.d/ — overrides defaults
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+UsePAM no

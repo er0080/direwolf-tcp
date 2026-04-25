@@ -1,0 +1,66 @@
+# dw-iface configuration
+# Copy to /etc/dw-iface/dw-iface.conf and edit before running 'dw-iface up'
+
+# ── Identity ────────────────────────────────────────────────────────────────
+# Your AX.25 callsign (required). Use an SSID to distinguish TNC stations
+# from your voice callsign (e.g. -5, -6).  Must be set — 'NOCALL' is rejected.
+MYCALL="NOCALL-5"
+
+# ── Audio ──────────────────────────────────────────────────────────────────
+# ALSA device name.  Run 'aplay -l' to list cards.
+# Icom IC-705 via USB audio:   plughw:CARD=CODEC_705,DEV=0
+# Icom IC-7300 via USB audio:  plughw:CARD=CODEC_7300,DEV=0
+# First USB audio card:        plughw:0,0
+AUDIO_DEVICE="plughw:CARD=CODEC_705,DEV=0"
+AUDIO_RATE=48000
+
+# ── PTT ───────────────────────────────────────────────────────────────────
+# Keying the radio before transmitting.  Comment out for VOX or software PTT.
+# Serial port RTS:  PTT="/dev/ttyUSB0 RTS"
+# Serial port DTR:  PTT="/dev/ttyUSB0 DTR"
+# Icom IC-705 CI-V: PTT="/dev/ic_705_b DTR"
+PTT="/dev/ic_705_b DTR"
+
+# ── Modem ─────────────────────────────────────────────────────────────────
+# 1200  = Bell 202 AFSK (HF/VHF, ~1200 bps, widest compatibility)
+# 2400  = V.26 QPSK (HF SSB, ~2400 bps, needs ~2.4 kHz filter bandwidth)
+MODEM=2400
+
+# TXDELAY: PTT-to-audio leader in 10 ms units.  200 ms (20) suits most radios.
+TXDELAY=20
+# TXTAIL: audio-to-PTT-off delay in 10 ms units.  50 ms (5) is safe.
+TXTAIL=10
+
+# ── IL2P FEC ──────────────────────────────────────────────────────────────
+# IL2PTX 1 wraps every outgoing frame in IL2P FEC (recommended).
+# The remote end does NOT need IL2PTX — it decodes both IL2P and plain AX.25.
+IL2PTX=1
+
+# ── CSMA (p-persistent channel access) ───────────────────────────────────
+# Tuned by OFAT sweep for a dedicated two-station 2400 QPSK link.
+# PERSIST=127 (~50% TX probability per slot) and SLOTTIME=5 (50 ms slots)
+# reduced frame loss from 81% (defaults) to 6% on the IC-705/IC-7300 setup.
+PERSIST=127
+SLOTTIME=5
+
+# DWAIT: extra hold-off after DCD drops, in 10 ms units.
+# On a two-station link, use asymmetric DWAIT to give one side channel priority.
+# This station waits 250 ms; set the peer to DWAIT=5 (50 ms).
+DWAIT=25
+
+# ── ARQ / framing ─────────────────────────────────────────────────────────
+PACLEN=512          # AX.25 payload bytes per frame
+MAXFRAME=7          # unacknowledged frames in flight (connected mode)
+EMAXFRAME=63        # extended (SABME) maximum
+FRACK=3             # frame ACK timeout (seconds)
+RETRY=3             # retransmit attempts before giving up
+
+# ── Network interface ─────────────────────────────────────────────────────
+# IP address and prefix for this end of the /30 link.
+# The other station uses the other address in the /30 (e.g. .2 vs .1).
+IP_ADDR="10.0.0.1/30"
+MTU=508             # must equal PACLEN - 4
+IFACE=tnc0          # TAP interface name created by tncattach
+
+# Internal KISS TCP port (localhost only — not exposed externally)
+KISS_PORT=8001

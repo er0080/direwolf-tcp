@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# dw-iface — Direwolf TNC network interface manager
+#
+# Usage: dw-iface COMMAND [OPTIONS]
+#
+# Commands:
+#   up      [--config FILE]  Bring up the TNC link
+#   down                     Tear down the TNC link
+#   status                   Show interface state
+#   doctor                   Check prerequisites
+
+set -euo pipefail
+
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/dw-iface" 2>/dev/null && pwd || echo /usr/lib/dw-iface)"
+DEFAULT_CONFIG="/etc/dw-iface/dw-iface.conf"
+
+usage() {
+    cat <<EOF
+Usage: dw-iface COMMAND [OPTIONS]
+
+Commands:
+  up      [--config FILE]  Bring up the TNC link (default config: ${DEFAULT_CONFIG})
+  down                     Tear down the TNC link
+  status                   Show interface state
+  doctor                   Check prerequisites and configuration
+
+Options for 'up':
+  --config FILE    Path to config file (default: ${DEFAULT_CONFIG})
+
+Examples:
+  sudo dw-iface up
+  sudo dw-iface up --config /etc/dw-iface/ic705.conf
+  sudo dw-iface status
+  sudo dw-iface down
+EOF
+}
+
+case "${1:-help}" in
+    up)     shift; exec "$LIB_DIR/dw-up.sh"     "$@" ;;
+    down)   shift; exec "$LIB_DIR/dw-down.sh"   "$@" ;;
+    status) shift; exec "$LIB_DIR/dw-status.sh" "$@" ;;
+    doctor) shift; exec "$LIB_DIR/dw-doctor.sh" "$@" ;;
+    help|--help|-h) usage; exit 0 ;;
+    *) echo "dw-iface: unknown command '$1'" >&2; usage >&2; exit 1 ;;
+esac

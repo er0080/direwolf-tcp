@@ -1,0 +1,10 @@
+dw-iface (0.1.0-1) unstable; urgency=low
+
+  * Initial release.
+  * dw-iface up/down/status/doctor CLI.
+  * Systemd unit for persistent link management.
+  * udev rules template for IC-705 and IC-7300.
+  * Example config with CSMA values derived from OFAT sweep on a
+    dedicated IC-705 + IC-7300 point-to-point link.
+
+ -- Eric L. Parent <eric.parent.314159@gmail.com>  Fri, 25 Apr 2026 12:00:00 +0000

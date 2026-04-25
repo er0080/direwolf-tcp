@@ -1,0 +1,30 @@
+[Unit]
+Description=Direwolf TNC network interface
+Documentation=man:direwolf(1) https://github.com/er0080/direwolf-tcp
+After=sound.target network-pre.target
+Wants=sound.target
+# Retry after failures — the radio may not be plugged in yet at boot
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=forking
+# Read config path from environment or use default
+Environment=DW_IFACE_CONFIG=/etc/dw-iface/dw-iface.conf
+EnvironmentFile=-/etc/dw-iface/dw-iface.env
+
+ExecStart=/usr/bin/dw-iface up
+ExecStop=/usr/bin/dw-iface down
+
+PIDFile=/run/dw-iface/direwolf.pid
+
+Restart=on-failure
+RestartSec=10
+
+# Keep logs in the journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dw-iface
+
+[Install]
+WantedBy=multi-user.target
