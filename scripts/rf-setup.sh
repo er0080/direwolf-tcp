@@ -122,7 +122,7 @@ wait_for "tnc0 created in host namespace" "ip link show tnc0"
 ip link set tnc0 netns ns_a
 ip netns exec ns_a \
     ifconfig tnc0 10.0.0.1 pointopoint 10.0.0.2 netmask 255.255.255.252 up
-echo "  tnc0: 10.0.0.1 ↔ 10.0.0.2  [ns_a]  (KISS 8001 / IC-705 KD2MYS-5)"
+echo "  tnc0: 10.0.0.1 ↔ 10.0.0.2  [ns_a]  (KISS 8001 / IC-705 NE2H-5)"
 
 # ---------------------------------------------------------------------------
 # Step 5: tncattach — IC-7300 → ns_b (tnc1 / 10.0.0.2)
@@ -139,7 +139,7 @@ ip link set tnc0 netns ns_b
 ip netns exec ns_b ip link set tnc0 name tnc1
 ip netns exec ns_b \
     ifconfig tnc1 10.0.0.2 pointopoint 10.0.0.1 netmask 255.255.255.252 up
-echo "  tnc1: 10.0.0.2 ↔ 10.0.0.1  [ns_b]  (KISS 8101 / IC-7300 KD2MYS-6)"
+echo "  tnc1: 10.0.0.2 ↔ 10.0.0.1  [ns_b]  (KISS 8101 / IC-7300 NE2H-6)"
 
 # ---------------------------------------------------------------------------
 # Done

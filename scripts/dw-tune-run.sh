@@ -147,8 +147,8 @@ trap cleanup EXIT
 # ── Generate configs ────────────────────────────────────────────────────────
 CONF_705="$RUN_TMP/dw-705.conf"
 CONF_7300="$RUN_TMP/dw-7300.conf"
-gen_config "$CONF_705"  8000 8001 CODEC_705  /dev/ic_705_b KD2MYS-5 "$DWAIT_B"
-gen_config "$CONF_7300" 8100 8101 CODEC_7300 /dev/ic_7300  KD2MYS-6 "$DWAIT_A"
+gen_config "$CONF_705"  8000 8001 CODEC_705  /dev/ic_705_b NE2H-5 "$DWAIT_B"
+gen_config "$CONF_7300" 8100 8101 CODEC_7300 /dev/ic_7300  NE2H-6 "$DWAIT_A"
 chmod 644 "$CONF_705" "$CONF_7300"
 
 # ── Launch Direwolf × 2 ─────────────────────────────────────────────────────
