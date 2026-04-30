@@ -32,7 +32,7 @@ jobs:
           SRC="dw-iface-${UPSTREAM}"
           cp -r package "$SRC"
           cd "$SRC"
-          dpkg-buildpackage -b -us -uc
+          dpkg-buildpackage -b -us -uc -d
           cd ..
           DEB=$(ls dw-iface_*.deb)
           echo "deb=$DEB" >> "$GITHUB_OUTPUT"
