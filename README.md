@@ -332,11 +332,7 @@ sudo apt install dw-iface
 
 Or download the `.deb` directly from [Releases](https://github.com/er0080/direwolf-tcp/releases) and install with `sudo dpkg -i dw-iface_*.deb`.
 
-> **Note:** `tncattach` is not in Ubuntu apt. Install it from source before using `dw-iface`:
-> ```bash
-> git clone https://github.com/markqvist/tncattach && cd tncattach && make
-> sudo cp tncattach /usr/local/sbin/
-> ```
+`tncattach` is bundled inside the `.deb` — no separate install step required.
 
 ---
 
@@ -388,15 +384,16 @@ sudo dw-iface doctor    # pre-flight check — binaries, audio device, config
 
 ## Systemd service
 
-The package installs and enables `dw-iface.service`. Start the link at boot:
+The package installs `dw-iface.service` but does **not** enable or start it. The link is an on-demand connection — treat it like a VPN that you bring up manually when needed:
 
 ```bash
-sudo systemctl enable --now dw-iface
+sudo dw-iface up                         # bring up now, once
+sudo systemctl enable --now dw-iface     # bring up now and on every boot
 sudo systemctl status dw-iface
 journalctl -u dw-iface -f
 ```
 
-The service restarts automatically on failure (e.g. if Direwolf crashes) with a 10-second delay. It does **not** start automatically on install — the radio must be plugged in and configured first.
+The service restarts automatically on failure (e.g. if Direwolf crashes) with a 10-second delay.
 
 ---
 
@@ -427,14 +424,16 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 | Installed path | Role |
 |----------------|------|
 | `/usr/bin/dw-iface` | Command dispatcher (`up`/`down`/`status`/`doctor`) |
+| `/usr/sbin/tncattach` | Bundled tncattach binary (vendored, built at package build time) |
 | `/usr/lib/dw-iface/dw-up.sh` | Link bring-up logic |
 | `/usr/lib/dw-iface/dw-down.sh` | Link teardown logic |
 | `/usr/lib/dw-iface/dw-status.sh` | Link status display |
 | `/usr/lib/dw-iface/dw-doctor.sh` | Pre-flight checks |
 | `/etc/dw-iface/dw-iface.conf.example` | Annotated configuration template |
 | `/etc/dw-iface/dw-iface.conf` | Live config (created from example on first install) |
-| `/lib/systemd/system/dw-iface.service` | Systemd service unit |
+| `/lib/systemd/system/dw-iface.service` | Systemd service unit (installed, not enabled) |
 | `/lib/udev/rules.d/99-dw-iface.rules` | Stable `/dev/ic_*` symlinks for Icom radios |
+| `/usr/share/man/man8/tncattach.8.gz` | tncattach man page |
 
 ---
 
@@ -481,27 +480,40 @@ sudo docker/setup.sh
 # Start both containers
 sudo docker compose -f docker/compose.yml up -d
 
-# Run end-to-end tests (ping, SSH, SCP, HTTP over RF)
+# End-to-end connectivity test (ping, SSH, SCP, HTTP over RF)
 sudo docker/test.sh
+
+# Sustained burn-in (default 30 min — same workloads as scripts/rf-burnin.sh)
+sudo docker/burnin.sh --duration 30
 
 # Stop containers
 sudo docker/teardown.sh
 ```
 
+> **Before starting containers:** ensure no other process holds the radio audio cards. Stale Direwolf instances from a previous `rf-setup.sh` session will block ALSA and prevent the containers from starting. Run `sudo scripts/rf-teardown.sh` to clean up first.
+
 `setup.sh` resolves the udev symlinks (`/dev/ic_705_b` → `/dev/ttyACM2`, etc.) and writes `docker/.env` so Docker compose can create named device nodes inside the containers — Docker does not follow symlinks in `devices:` entries.
 
 ### Test workloads
 
-`docker/test.sh` runs all tests from inside node-a's network namespace via `docker exec`. node-b is reachable only through the radio link.
+`docker/test.sh` runs a quick end-to-end connectivity check via `docker exec`. node-b is reachable only through the radio link.
 
 | Test | Acceptance | Typical result |
 |------|-----------|----------------|
-| ICMP ping (10 × 3s interval) | ≤ 20% loss | ~10% loss, RTT ~1.7 s |
+| ICMP ping (10 × 3s interval) | ≤ 20% loss | 0–10% loss, RTT ~1.7–2.0 s |
 | SSH (`hostname` query) | connects | ~80 s to complete |
 | SCP (`/etc/hostname` → node-b) | file arrives | ~100 s to complete |
 | HTTP (`curl http://10.0.0.2/`) | 200 OK | ~20 s |
 
-SSH and SCP timeouts are set to 300 s — RF TCP handshakes involve many round trips at ~1.7 s each.
+SSH and SCP timeouts are set to 300 s — RF TCP handshakes involve many round trips at ~1.7–2.0 s each.
+
+`docker/burnin.sh` runs a sustained mixed workload (same structure as `scripts/rf-burnin.sh`) and is the definitive pass/fail gate for the package. Verified results with `dw-iface 0.1.2-1` on a real IC-705 ↔ IC-7300 link over 27 minutes (15 complete iterations):
+
+| Test | Result |
+|------|--------|
+| Ping (0% loss threshold) | 15/15 pass — 0% loss, RTT 1.8–2.0 s |
+| HTTP GET | 15/15 pass — 200 OK, 5–11 s per fetch |
+| Bulk TCP (32 KB) | 4/4 pass — 876–1078 bps goodput, all bytes received |
 
 ### Overriding device paths
 
