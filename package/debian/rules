@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) -C vendor/tncattach
+
+override_dh_auto_clean:
+	$(MAKE) -C vendor/tncattach clean || true
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/dw-iface PREFIX=/usr
+
+# Install the systemd unit but do NOT enable or start it at package install
+# time.  dw-iface is an on-demand link (like a VPN) — the user runs
+# 'dw-iface up' when they want the link, or enables the unit explicitly.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

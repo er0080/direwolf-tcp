@@ -310,3 +310,258 @@ At 2400 baud QPSK with PERSIST 127 / SLOTTIME 5 / asymmetric DWAIT (tuned values
 - [tncattach](https://github.com/markqvist/tncattach) — Mark Qvist
 - [PipeWire](https://pipewire.org/) / PulseAudio compatibility layer
 - [Direwolf User Guide](https://github.com/wb2osz/direwolf/tree/master/doc)
+
+---
+
+# dw-iface — Debian package and Docker RF test harness
+
+The `dw-iface` branch packages everything needed to stand up one side of a Direwolf RF link as a proper Debian package, and verifies it end-to-end with two Docker containers that communicate exclusively over real radio hardware.
+
+---
+
+## Installing dw-iface
+
+Add the apt repository (hosted on GitHub Pages), then install like any other package:
+
+```bash
+echo "deb [trusted=yes] https://er0080.github.io/direwolf-tcp stable main" \
+  | sudo tee /etc/apt/sources.list.d/dw-iface.list
+sudo apt update
+sudo apt install dw-iface
+```
+
+Or download the `.deb` directly from [Releases](https://github.com/er0080/direwolf-tcp/releases) and install with `sudo dpkg -i dw-iface_*.deb`.
+
+`tncattach` is bundled inside the `.deb` — no separate install step required.
+
+---
+
+## Configuration
+
+`dpkg` creates `/etc/dw-iface/dw-iface.conf` from the example on first install. Edit it before running `dw-iface up`:
+
+```bash
+sudo nano /etc/dw-iface/dw-iface.conf
+```
+
+Key parameters:
+
+```bash
+# AX.25 callsign (required — use an SSID to distinguish the TNC from your voice call)
+MYCALL="N0CALL-5"
+
+# ALSA audio device — run 'aplay -l' to find your radio's card name
+AUDIO_DEVICE="plughw:CARD=CODEC_705,DEV=0"   # IC-705
+# AUDIO_DEVICE="plughw:CARD=CODEC_7300,DEV=0"  # IC-7300
+
+# PTT method — comment out for VOX
+PTT="/dev/ic_705_b DTR"    # IC-705 CI-V serial, DTR pin
+
+# Modem: 1200 (Bell 202 AFSK) or 2400 (V.26 QPSK, needs ~2.4 kHz filter)
+MODEM=2400
+
+# This station's IP address on the /30 link
+IP_ADDR="10.0.0.1/30"
+MTU=508    # must equal PACLEN - 4
+```
+
+A full annotated example with all tuneable parameters is at `/etc/dw-iface/dw-iface.conf.example`.
+
+---
+
+## Commands
+
+```bash
+sudo dw-iface up        # start Direwolf + tncattach; configure tnc0
+sudo dw-iface down      # gracefully stop both processes; remove tnc0
+sudo dw-iface status    # show link state, PIDs, and IP address
+sudo dw-iface doctor    # pre-flight check — binaries, audio device, config
+```
+
+`dw-iface up` generates a `direwolf.conf` from your config file, starts Direwolf on the KISS TCP port, waits for the port to open, starts `tncattach` in TCP mode, waits for `tnc0` to appear, then assigns the IP address. All state is stored under `/run/dw-iface/`.
+
+---
+
+## Systemd service
+
+The package installs `dw-iface.service` but does **not** enable or start it. The link is an on-demand connection — treat it like a VPN that you bring up manually when needed:
+
+```bash
+sudo dw-iface up                         # bring up now, once
+sudo systemctl enable --now dw-iface     # bring up now and on every boot
+sudo systemctl status dw-iface
+journalctl -u dw-iface -f
+```
+
+The service restarts automatically on failure (e.g. if Direwolf crashes) with a 10-second delay.
+
+---
+
+## Udev rules
+
+`/lib/udev/rules.d/99-dw-iface.rules` creates stable `/dev/ic_*` symlinks so that config files don't need updating when the radio is plugged into a different USB port. Edit the file with your radio's serial number (find it with `udevadm info -a -n /dev/ttyUSBx | grep serial`), then reload:
+
+```bash
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+---
+
+## What `dw-iface up` does step by step
+
+1. Sources `/etc/dw-iface/dw-iface.conf`
+2. Resolves the ALSA card name to a card number (required inside Docker containers where `/proc/asound/cards` may be absent — uses `/sys/class/sound/cardN/id` as fallback)
+3. Writes `/run/dw-iface/direwolf.conf` from config parameters
+4. Starts `direwolf -c ... -t 0` in the background; waits up to 30 s for the KISS TCP port
+5. Starts `tncattach -T -H localhost -P <KISS_PORT> --mtu <MTU> --noipv6` in the background; waits up to 30 s for `tnc0` to appear
+6. Assigns `IP_ADDR` to `tnc0` and brings it up
+7. Writes PIDs and state to `/run/dw-iface/`
+
+---
+
+## Package contents
+
+| Installed path | Role |
+|----------------|------|
+| `/usr/bin/dw-iface` | Command dispatcher (`up`/`down`/`status`/`doctor`) |
+| `/usr/sbin/tncattach` | Bundled tncattach binary (vendored, built at package build time) |
+| `/usr/lib/dw-iface/dw-up.sh` | Link bring-up logic |
+| `/usr/lib/dw-iface/dw-down.sh` | Link teardown logic |
+| `/usr/lib/dw-iface/dw-status.sh` | Link status display |
+| `/usr/lib/dw-iface/dw-doctor.sh` | Pre-flight checks |
+| `/etc/dw-iface/dw-iface.conf.example` | Annotated configuration template |
+| `/etc/dw-iface/dw-iface.conf` | Live config (created from example on first install) |
+| `/lib/systemd/system/dw-iface.service` | Systemd service unit (installed, not enabled) |
+| `/lib/udev/rules.d/99-dw-iface.rules` | Stable `/dev/ic_*` symlinks for Icom radios |
+| `/usr/share/man/man8/tncattach.8.gz` | tncattach man page |
+
+---
+
+## Docker RF test harness
+
+The `docker/` directory contains a two-container test harness that proves the package works on real radio hardware. The two containers have **no Docker network between them** — their only communication path is the actual RF link via IC-705 and IC-7300.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Host machine                                             │
+│                                                          │
+│  ┌─────────────────────┐     RF      ┌────────────────┐  │
+│  │  dwiface-node-a     │ ~~~~~~~~~~~ │ dwiface-node-b │  │
+│  │  network_mode: none │  IC-705 ↔  │ network_mode:  │  │
+│  │  tnc0: 10.0.0.1/30  │  IC-7300   │ none           │  │
+│  │  sshd               │             │ tnc0: 10.0.0.2 │  │
+│  └─────────────────────┘             │ sshd + nginx   │  │
+│                                      └────────────────┘  │
+│  No Docker bridge — zero IP path between containers      │
+│  except through the radio link                           │
+└──────────────────────────────────────────────────────────┘
+```
+
+Each container:
+- Builds and installs the `dw-iface` `.deb` from source during the Docker image build (proving packaging end-to-end)
+- Runs `dw-iface up` at startup to bring up `tnc0`
+- Runs `sshd` (and `nginx` on node-b) for the test workloads
+- Exits if Direwolf dies
+
+### Prerequisites
+
+- Docker installed and running (`docker info` must succeed)
+- IC-705 and IC-7300 connected via USB (audio + CI-V serial)
+- Udev aliases in place: `/dev/ic_705_b` (IC-705 CI-V), `/dev/ic_7300` (IC-7300 CI-V)
+
+### Setup and teardown
+
+```bash
+# First time: resolve device paths, generate SSH keys, build image
+sudo docker/setup.sh
+
+# Start both containers
+sudo docker compose -f docker/compose.yml up -d
+
+# End-to-end connectivity test (ping, SSH, SCP, HTTP over RF)
+sudo docker/test.sh
+
+# Sustained burn-in (default 30 min — same workloads as scripts/rf-burnin.sh)
+sudo docker/burnin.sh --duration 30
+
+# Stop containers
+sudo docker/teardown.sh
+```
+
+> **Before starting containers:** ensure no other process holds the radio audio cards. Stale Direwolf instances from a previous `rf-setup.sh` session will block ALSA and prevent the containers from starting. Run `sudo scripts/rf-teardown.sh` to clean up first.
+
+`setup.sh` resolves the udev symlinks (`/dev/ic_705_b` → `/dev/ttyACM2`, etc.) and writes `docker/.env` so Docker compose can create named device nodes inside the containers — Docker does not follow symlinks in `devices:` entries.
+
+### Test workloads
+
+`docker/test.sh` runs a quick end-to-end connectivity check via `docker exec`. node-b is reachable only through the radio link.
+
+| Test | Acceptance | Typical result |
+|------|-----------|----------------|
+| ICMP ping (10 × 3s interval) | ≤ 20% loss | 0–10% loss, RTT ~1.7–2.0 s |
+| SSH (`hostname` query) | connects | ~80 s to complete |
+| SCP (`/etc/hostname` → node-b) | file arrives | ~100 s to complete |
+| HTTP (`curl http://10.0.0.2/`) | 200 OK | ~20 s |
+
+SSH and SCP timeouts are set to 300 s — RF TCP handshakes involve many round trips at ~1.7–2.0 s each.
+
+`docker/burnin.sh` runs a sustained mixed workload (same structure as `scripts/rf-burnin.sh`) and is the definitive pass/fail gate for the package. Verified results with `dw-iface 0.1.2-1` on a real IC-705 ↔ IC-7300 link over 27 minutes (15 complete iterations):
+
+| Test | Result |
+|------|--------|
+| Ping (0% loss threshold) | 15/15 pass — 0% loss, RTT 1.8–2.0 s |
+| HTTP GET | 15/15 pass — 200 OK, 5–11 s per fetch |
+| Bulk TCP (32 KB) | 4/4 pass — 876–1078 bps goodput, all bytes received |
+
+### Overriding device paths
+
+If your radio PTT devices are on different nodes:
+
+```bash
+IC705_PTT=/dev/ttyACM3 IC7300_PTT=/dev/ttyUSB1 sudo docker compose -f docker/compose.yml up -d
+```
+
+Or edit `docker/.env` (generated by `setup.sh`, gitignored).
+
+### Node configuration
+
+| | node-a (IC-705) | node-b (IC-7300) |
+|-|-----------------|------------------|
+| Config | `docker/config/node-a.conf` | `docker/config/node-b.conf` |
+| PTT device | `/dev/ic_705_b` (DTR) | `/dev/ic_7300` (DTR) |
+| ALSA card | `CODEC_705` | `CODEC_7300` |
+| IP | 10.0.0.1/30 | 10.0.0.2/30 |
+| DWAIT | 25 (250 ms) | 5 (50 ms) |
+| Services | sshd | sshd + nginx |
+
+DWAIT is asymmetric for the same reason as the host RF setup — see the CSMA section above.
+
+### Key technical notes
+
+- **`privileged: true`** is set on both containers. Direct access to physical radio hardware (ALSA audio, serial PTT) requires it. This is appropriate for an RF test harness but not for general use.
+- **Docker `devices:` does not follow symlinks.** `setup.sh` resolves udev symlinks to real `tty*` device paths and writes `docker/.env`. Compose maps the real device to the expected name inside the container (e.g. `/dev/ttyACM2:/dev/ic_705_b`).
+- **ALSA card name resolution.** In privileged containers, `/proc/asound/cards` is present and ALSA resolves card names normally. The `resolve_alsa_device()` function in `dw-up.sh` falls back to `/sys/class/sound/cardN/id` sysfs when `/proc/asound/cards` is absent (non-privileged or restricted containers).
+- **`tncattach` TCP flags.** tncattach must be invoked as `tncattach -T -H localhost -P <port>` for KISS-over-TCP. The positional `tncattach host port` syntax opens the first argument as a serial device.
+
+---
+
+## CI / Publishing
+
+`.github/workflows/publish-deb.yml` triggers on every `v*` tag push (and supports manual dispatch):
+
+1. Builds `tncattach` from the submodule on a clean `ubuntu-24.04` runner
+2. Builds the `dw-iface` `.deb` via `dpkg-buildpackage -b -us -uc -d`
+3. Pushes the `.deb` to the `gh-pages` branch as a proper apt repository (pool + Packages index + Release file)
+4. Creates a GitHub Release with the `.deb` attached
+
+To publish a new version:
+
+```bash
+# Update the version in package/debian/changelog, then:
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The apt repository at `https://er0080.github.io/direwolf-tcp` updates automatically within ~60 seconds of the tag push.

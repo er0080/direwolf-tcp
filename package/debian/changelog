@@ -1,0 +1,32 @@
+dw-iface (0.1.2-1) unstable; urgency=low
+
+  * CI: restore -d flag to dpkg-buildpackage so runner does not require
+    build-essential:native (gcc and make are installed explicitly).
+
+ -- Eric L. Parent <eric.parent.314159@gmail.com>  Wed, 30 Apr 2026 00:00:00 +0000
+
+dw-iface (0.1.1-1) unstable; urgency=low
+
+  * Bundle tncattach (vendored source, built at package build time).
+    No separate tncattach install step required.
+  * Add debian/copyright (DEP-5).
+  * Systemd unit: add RuntimeDirectory=dw-iface so /run/dw-iface is
+    created automatically at service start (survives reboots).
+  * Systemd unit: do not enable or start at package install time.
+    dw-iface is an on-demand link — run 'dw-iface up' or
+    'systemctl enable --now dw-iface' explicitly.
+  * Remove ${shlibs:Depends} build warning (now resolved via bundled C binary).
+  * Remove double systemctl-enable in postinst; debhelper owns that path.
+
+ -- Eric L. Parent <eric.parent.314159@gmail.com>  Tue, 29 Apr 2026 12:00:00 +0000
+
+dw-iface (0.1.0-1) unstable; urgency=low
+
+  * Initial release.
+  * dw-iface up/down/status/doctor CLI.
+  * Systemd unit for persistent link management.
+  * udev rules template for IC-705 and IC-7300.
+  * Example config with CSMA values derived from OFAT sweep on a
+    dedicated IC-705 + IC-7300 point-to-point link.
+
+ -- Eric L. Parent <eric.parent.314159@gmail.com>  Fri, 25 Apr 2026 12:00:00 +0000

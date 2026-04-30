@@ -23,8 +23,51 @@ See `README.md` for full architecture, setup steps, and tuning notes.
 | `scripts/dw-tune-sweep.sh` | OFAT CSMA parameter sweep — iterates DWAIT/PERSIST/SLOTTIME combinations, calls `dw-tune-run.sh` per point, appends to `logs/tune/sweep.csv` |
 | `scripts/dw-tune-run.sh` | Single measurement run for the sweep: launches a Direwolf pair with a given config, runs mixed workload, emits JSON result |
 | `scripts/dw-tune-analyze.py` | Reads `sweep.csv`, scores each config by composite metric, prints sorted table and per-factor OFAT effects |
-| tncattach (`tncattach/tncattach`) | Bridges KISS/TCP → TAP interfaces; built from git submodule |
+| tncattach (`tncattach/tncattach`) | Bridges KISS/TCP → TAP interfaces; built from git submodule (host scripts only — the dw-iface package bundles its own copy) |
 | Network namespaces | `ns_a` holds `tnc0` (10.0.0.1), `ns_b` holds `tnc1` (10.0.0.2) |
+
+## dw-iface Package (`package/`)
+
+The `dw-iface` branch adds a Debian package that wraps the RF link into a single `apt install`.
+
+| Component | Role |
+|-----------|------|
+| `package/bin/dw-iface` | CLI dispatcher — `up`, `down`, `status`, `doctor` |
+| `package/lib/dw-up.sh` | Starts Direwolf + tncattach, assigns IP; reads `/etc/dw-iface/dw-iface.conf` |
+| `package/lib/dw-down.sh` | Graceful teardown |
+| `package/lib/dw-status.sh` / `dw-doctor.sh` | Status display and pre-flight checks |
+| `package/vendor/tncattach/` | Vendored tncattach source (MIT); compiled during `dpkg-buildpackage` |
+| `package/systemd/dw-iface.service` | Systemd unit — installed but NOT enabled at package install time |
+| `package/debian/` | Standard Debian packaging (debhelper 13, compat 13) |
+| `.github/workflows/publish-deb.yml` | CI: builds `.deb` on every `v*` tag, publishes to GitHub Pages apt repo |
+
+Key packaging constraints:
+- **tncattach is vendored** in `package/vendor/tncattach/` and compiled via `override_dh_auto_build`. The package is self-contained — no external tncattach install needed.
+- **Service is not enabled at install**: `dh_installsystemd --no-enable --no-start`. Treat dw-iface like a VPN — bring it up manually with `dw-iface up` or `systemctl enable --now dw-iface`.
+- **`dpkg-buildpackage -d`** in CI skips the `build-essential:native` dep check since gcc/make are installed explicitly on the runner.
+- **ALSA card resolution**: `dw-up.sh` checks `/proc/asound/cards` first, falls back to `/sys/class/sound/cardN/id` sysfs for Docker/restricted environments.
+
+## Docker RF Test Harness (`docker/`)
+
+Two containers with `network_mode: none` — the only path between them is the real IC-705 ↔ IC-7300 RF link.
+
+| Component | Role |
+|-----------|------|
+| `docker/compose.yml` | Defines `dwiface-node-a` (IC-705) and `dwiface-node-b` (IC-7300); both `privileged: true` |
+| `docker/Dockerfile` | Two-stage: builds `dw-iface` `.deb` from `package/`, installs it in the runtime image |
+| `docker/entrypoint.sh` | Calls `dw-iface up`, waits for `tnc0`, starts sshd (and nginx on node-b) |
+| `docker/setup.sh` | Resolves udev symlinks → `docker/.env`; generates SSH keys; builds image |
+| `docker/teardown.sh` | Stops containers |
+| `docker/test.sh` | Quick connectivity check: ping, SSH, SCP, HTTP |
+| `docker/burnin.sh` | Sustained 30-min burn-in via `docker exec`; logs to `logs/burnin/`; exit 0 = pass |
+| `docker/config/node-a.conf` | dw-iface config for IC-705 (10.0.0.1, DWAIT 25) |
+| `docker/config/node-b.conf` | dw-iface config for IC-7300 (10.0.0.2, DWAIT 5) |
+
+Key Docker constraints:
+- **`docker/setup.sh` must run before `docker compose up`**: it resolves `/dev/ic_705_b` → `/dev/ttyACMx` and writes `docker/.env`. Docker `devices:` does not follow udev symlinks.
+- **Stale RF direwolf instances block ALSA**: if `scripts/rf-setup.sh` was run earlier, its direwolf processes hold the audio cards. Run `sudo scripts/rf-teardown.sh` before starting containers.
+- **`burnin.sh` uses `docker exec NODE CMD` directly for timeout-wrapped calls** — bash functions cannot be passed as the command to `timeout` (timeout exec()s its argument as a binary).
+- **`docker/.env` is gitignored** — it contains machine-specific resolved device paths.
 
 ## Audio Wiring
 

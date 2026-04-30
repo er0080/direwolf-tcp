@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Fix permissions on helper scripts
+        chmod 755 /usr/lib/dw-iface/dw-up.sh \
+                  /usr/lib/dw-iface/dw-down.sh \
+                  /usr/lib/dw-iface/dw-status.sh \
+                  /usr/lib/dw-iface/dw-doctor.sh
+
+        # Create config and log dirs
+        mkdir -p /etc/dw-iface /var/log/dw-iface
+
+        # Install example config if no config exists yet
+        if [ ! -f /etc/dw-iface/dw-iface.conf ]; then
+            cp /etc/dw-iface/dw-iface.conf.example /etc/dw-iface/dw-iface.conf
+            echo "dw-iface: created /etc/dw-iface/dw-iface.conf — edit before running 'dw-iface up'"
+        fi
+
+        echo "dw-iface: run 'sudo dw-iface up' to bring up the link"
+        echo "          or  'sudo systemctl enable --now dw-iface' to start at boot"
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

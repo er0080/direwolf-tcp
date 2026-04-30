@@ -1,0 +1,29 @@
+# udev rules for common radio hardware used with dw-iface
+# Creates stable /dev/ symlinks so config files don't need to change when
+# the device is plugged into a different USB port.
+#
+# To find your radio's idVendor/idProduct/serial:
+#   udevadm info -a -n /dev/ttyUSBx | grep -E 'idVendor|idProduct|serial'
+#
+# After editing, reload with:
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# ── Icom IC-705 (two USB interfaces: A=data/audio, B=CI-V serial) ────────────
+# USB Vendor: ICOM (10c4 = CP2102 USB-serial inside the IC-705)
+# The serial number distinguishes multiple IC-705s on the same machine.
+# Replace XXXXXXXX with the output of: udevadm info -a -n /dev/ttyUSBx | grep serial
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", \
+    ATTRS{serial}=="IC-705 XXXXXXXX", ATTRS{bInterfaceNumber}=="00", \
+    SYMLINK+="ic_705_a", MODE="0660", GROUP="dialout"
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", \
+    ATTRS{serial}=="IC-705 XXXXXXXX", ATTRS{bInterfaceNumber}=="01", \
+    SYMLINK+="ic_705_b", MODE="0660", GROUP="dialout"
+
+# ── Icom IC-7300 ─────────────────────────────────────────────────────────────
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="a]4d", \
+    ATTRS{serial}=="IC-7300 YYYYYYYY", \
+    SYMLINK+="ic_7300", MODE="0660", GROUP="dialout"
+
+# ── Generic: add user to 'dialout' group for serial port access ─────────────
+# Run once: sudo usermod -aG dialout $USER  (then log out and back in)
