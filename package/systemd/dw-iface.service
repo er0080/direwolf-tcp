@@ -9,6 +9,10 @@ StartLimitBurst=3
 
 [Service]
 Type=forking
+# systemd creates /run/dw-iface before ExecStart and removes it on stop
+RuntimeDirectory=dw-iface
+RuntimeDirectoryMode=0755
+
 # Read config path from environment or use default
 Environment=DW_IFACE_CONFIG=/etc/dw-iface/dw-iface.conf
 EnvironmentFile=-/etc/dw-iface/dw-iface.env

@@ -1,8 +1,0 @@
-bin/dw-iface                        usr/bin/
-lib/dw-up.sh                        usr/lib/dw-iface/
-lib/dw-down.sh                      usr/lib/dw-iface/
-lib/dw-status.sh                    usr/lib/dw-iface/
-lib/dw-doctor.sh                    usr/lib/dw-iface/
-config/dw-iface.conf.example        etc/dw-iface/
-systemd/dw-iface.service            lib/systemd/system/
-udev/99-dw-iface.rules              lib/udev/rules.d/

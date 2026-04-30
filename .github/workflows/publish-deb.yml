@@ -15,27 +15,24 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y debhelper dpkg-dev apt-utils gcc make
 
-      - name: Build tncattach
-        run: cd tncattach && make
-
       - name: Build dw-iface .deb
         id: build
         run: |
-          # dpkg-buildpackage expects the source dir named package-version
+          # dpkg-buildpackage expects the source dir named package-version.
+          # tncattach is vendored in package/vendor/tncattach/ and compiled
+          # as part of the package build (no separate build step needed).
           VERSION=$(dpkg-parsechangelog -l package/debian/changelog -S Version)
           UPSTREAM=${VERSION%-*}
           SRC="dw-iface-${UPSTREAM}"
           cp -r package "$SRC"
           cd "$SRC"
-          dpkg-buildpackage -b -us -uc -d
+          dpkg-buildpackage -b -us -uc
           cd ..
           DEB=$(ls dw-iface_*.deb)
           echo "deb=$DEB" >> "$GITHUB_OUTPUT"
