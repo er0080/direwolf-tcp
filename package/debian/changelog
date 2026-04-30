@@ -1,3 +1,10 @@
+dw-iface (0.1.2-1) unstable; urgency=low
+
+  * CI: restore -d flag to dpkg-buildpackage so runner does not require
+    build-essential:native (gcc and make are installed explicitly).
+
+ -- Eric L. Parent <eric.parent.314159@gmail.com>  Wed, 30 Apr 2026 00:00:00 +0000
+
 dw-iface (0.1.1-1) unstable; urgency=low
 
   * Bundle tncattach (vendored source, built at package build time).
